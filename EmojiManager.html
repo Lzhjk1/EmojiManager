@@ -433,6 +433,12 @@
         let currentSearchTerm = '';
         let scrollPosition = 0;
         let searchExpandedFolders = new Set(); // 搜索状态下的文件夹展开状态
+        const PLACEHOLDER_SRC = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+        const MAX_ACTIVE_IMAGES = 400;
+        const IMAGE_UNLOAD_DELAY = 1200;
+        let imageObserver = null;
+        const activeImages = new Set();
+        const imageUnloadTimers = new Map();
 
         function showToast(message, type = 'info') {
             const container = document.getElementById('toast-container');
@@ -461,10 +467,124 @@
             }, 3000);
         }
 
+        function resetImageObserver() {
+            if (imageObserver) {
+                imageObserver.disconnect();
+            }
+            for (const timer of imageUnloadTimers.values()) {
+                clearTimeout(timer);
+            }
+            imageUnloadTimers.clear();
+            activeImages.clear();
+        }
+
+        function ensureImageObserver() {
+            if (imageObserver) return;
+            const root = document.getElementById('content');
+            imageObserver = new IntersectionObserver(handleImageIntersect, {
+                root,
+                rootMargin: '600px 0px',
+                threshold: 0.01
+            });
+        }
+
+        function handleImageIntersect(entries) {
+            entries.forEach(entry => {
+                const img = entry.target;
+                if (entry.isIntersecting) {
+                    img.dataset.inView = '1';
+                    clearUnloadTimer(img);
+                    loadImage(img);
+                } else {
+                    img.dataset.inView = '0';
+                    scheduleUnload(img);
+                }
+            });
+            enforceActiveLimit();
+        }
+
+        function observeImage(img) {
+            ensureImageObserver();
+            imageObserver.observe(img);
+        }
+
+        function unobserveImage(img) {
+            if (imageObserver) {
+                imageObserver.unobserve(img);
+            }
+            clearUnloadTimer(img);
+        }
+
+        function clearUnloadTimer(img) {
+            const timer = imageUnloadTimers.get(img);
+            if (timer) {
+                clearTimeout(timer);
+                imageUnloadTimers.delete(img);
+            }
+        }
+
+        function scheduleUnload(img) {
+            if (img.dataset.loaded !== '1') return;
+            if (imageUnloadTimers.has(img)) return;
+            const timer = setTimeout(() => {
+                if (img.dataset.inView !== '1') {
+                    unloadImage(img);
+                }
+            }, IMAGE_UNLOAD_DELAY);
+            imageUnloadTimers.set(img, timer);
+        }
+
+        function loadImage(img) {
+            if (img.dataset.loaded === '1') {
+                bumpActiveImage(img);
+                return;
+            }
+            img.src = img.dataset.src;
+            img.dataset.loaded = '1';
+            bumpActiveImage(img);
+            activeImages.add(img);
+        }
+
+        function unloadImage(img) {
+            clearUnloadTimer(img);
+            if (img.dataset.loaded !== '1') return;
+            img.src = PLACEHOLDER_SRC;
+            delete img.dataset.loaded;
+            activeImages.delete(img);
+        }
+
+        function bumpActiveImage(img) {
+            if (activeImages.has(img)) {
+                activeImages.delete(img);
+            }
+            activeImages.add(img);
+        }
+
+        function enforceActiveLimit() {
+            if (activeImages.size <= MAX_ACTIVE_IMAGES) return;
+            for (const img of activeImages) {
+                if (activeImages.size <= MAX_ACTIVE_IMAGES) break;
+                if (img.dataset.inView !== '1') {
+                    unloadImage(img);
+                }
+            }
+        }
+
+        function disposeImage(img) {
+            unobserveImage(img);
+            unloadImage(img);
+        }
+
+        function disposeImagesInContainer(container) {
+            if (!container) return;
+            container.querySelectorAll('img[data-src]').forEach(img => {
+                disposeImage(img);
+            });
+        }
+
         function saveState() {
             // 只在非搜索状态下保存展开状态
             if (!currentSearchTerm) {
-                expandedFolders.clear();
                 document.querySelectorAll('.folder-content.expanded').forEach(content => {
                     const folder = content.previousElementSibling;
                     if (folder && folder.dataset.folderPath) {
@@ -593,6 +713,7 @@
 
         function renderFolders() {
             const content = document.getElementById('content');
+            resetImageObserver();
             content.innerHTML = '';
 
             filteredData.forEach(folder => {
@@ -645,37 +766,10 @@
 
             const content = document.createElement('div');
             content.className = `folder-content${isExpanded ? ' expanded' : ''}`;
+            content.dataset.rendered = '0';
 
-            // 添加图片网格
-            if (folder.Images && folder.Images.length > 0) {
-                const grid = document.createElement('div');
-                grid.className = 'image-grid';
-                grid.dataset.folderPath = folder.Path;
-
-                // 应用文件夹特定的缩放比例
-                if (folderScales[folder.Path]) {
-                    const scale = folderScales[folder.Path];
-                    const scaledSize = Math.round(baseThumbnailSize * scale);
-                    grid.style.setProperty('--thumbnail-size', scaledSize + 'px');
-                } else {
-                    // 确保默认尺寸被正确设置
-                    grid.style.setProperty('--thumbnail-size', baseThumbnailSize + 'px');
-                }
-
-                folder.Images.forEach(imagePath => {
-                    const item = createImageItem(imagePath);
-                    grid.appendChild(item);
-                });
-
-                content.appendChild(grid);
-                setupDropZone(grid);
-            }
-
-            // 递归渲染子文件夹
-            if (folder.Children && folder.Children.length > 0) {
-                folder.Children.forEach(child => {
-                    renderFolder(child, content, fullPath + '/');
-                });
+            if (isExpanded) {
+                buildFolderContent(folder, content, fullPath);
             }
 
             // 添加右键菜单支持
@@ -735,6 +829,16 @@
                         expandedFolders.delete(folder.Path);
                     }
                 }
+
+                if (content.classList.contains('expanded')) {
+                    if (content.dataset.rendered !== '1') {
+                        buildFolderContent(folder, content, fullPath);
+                    }
+                } else {
+                    if (content.dataset.rendered === '1') {
+                        clearFolderContent(content);
+                    }
+                }
             };
 
             setupDropZone(header);
@@ -742,6 +846,48 @@
             folderDiv.appendChild(header);
             folderDiv.appendChild(content);
             parent.appendChild(folderDiv);
+        }
+
+        function buildFolderContent(folder, content, fullPath) {
+            content.dataset.rendered = '1';
+
+            // 添加图片网格
+            if (folder.Images && folder.Images.length > 0) {
+                const grid = document.createElement('div');
+                grid.className = 'image-grid';
+                grid.dataset.folderPath = folder.Path;
+
+                // 应用文件夹特定的缩放比例
+                if (folderScales[folder.Path]) {
+                    const scale = folderScales[folder.Path];
+                    const scaledSize = Math.round(baseThumbnailSize * scale);
+                    grid.style.setProperty('--thumbnail-size', scaledSize + 'px');
+                } else {
+                    // 确保默认尺寸被正确设置
+                    grid.style.setProperty('--thumbnail-size', baseThumbnailSize + 'px');
+                }
+
+                folder.Images.forEach(imagePath => {
+                    const item = createImageItem(imagePath);
+                    grid.appendChild(item);
+                });
+
+                content.appendChild(grid);
+                setupDropZone(grid);
+            }
+
+            // 递归渲染子文件夹
+            if (folder.Children && folder.Children.length > 0) {
+                folder.Children.forEach(child => {
+                    renderFolder(child, content, fullPath + '/');
+                });
+            }
+        }
+
+        function clearFolderContent(content) {
+            disposeImagesInContainer(content);
+            content.innerHTML = '';
+            content.dataset.rendered = '0';
         }
 
         function setupDropZone(element) {
@@ -862,8 +1008,11 @@
             item.dataset.imagePath = imagePath;
 
             const img = document.createElement('img');
-            img.src = buildEncodedUrl(imagePath);
+            img.dataset.src = buildEncodedUrl(imagePath);
+            img.src = PLACEHOLDER_SRC;
             img.loading = 'lazy';
+            img.decoding = 'async';
+            img.setAttribute('fetchpriority', 'low');
             img.onerror = function () {
                 console.error('Failed to load image:', imagePath);
                 console.error('Attempted URL:', this.src);
@@ -893,6 +1042,7 @@
             };
 
             item.appendChild(img);
+            observeImage(img);
 
             // 点击复制
             item.onclick = (e) => {

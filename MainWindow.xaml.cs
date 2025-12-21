@@ -8,6 +8,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
@@ -24,9 +25,11 @@ namespace EmojiManager
         private bool _isPinned;
         private FileSystemWatcher? _fileWatcher;
         private readonly object _reloadLock = new();
-        private DateTime _lastReloadTime = DateTime.MinValue;
+        private CancellationTokenSource? _reloadCts;
+        private readonly SemaphoreSlim _loadSemaphore = new(1, 1);
         private TaskbarIcon? _taskbarIcon;
         private System.Windows.Threading.DispatcherTimer? _foregroundWindowTracker;
+        private static readonly TimeSpan ReloadDebounceInterval = TimeSpan.FromMilliseconds(300);
         
         // 缓存 JsonSerializerOptions 实例
         private static readonly JsonSerializerOptions JsonOptions = new()
@@ -272,14 +275,6 @@ namespace EmojiManager
 
         private void OnFileSystemChanged(object sender, FileSystemEventArgs e)
         {
-            // 防抖处理，避免频繁刷新
-            lock (_reloadLock)
-            {
-                if (DateTime.Now - _lastReloadTime < TimeSpan.FromMilliseconds(500))
-                    return;
-                _lastReloadTime = DateTime.Now;
-            }
-
             // 检查是否应该处理此文件变化
             var shouldProcess = false;
             var extension = Path.GetExtension(e.FullPath).ToLower();
@@ -309,12 +304,38 @@ namespace EmojiManager
 
             if (shouldProcess)
             {
-                Dispatcher.InvokeAsync(async () =>
-                {
-                    await Task.Delay(100); // 等待文件操作完成
-                    await LoadEmojiData();
-                });
+                QueueEmojiReload();
             }
+        }
+
+        private void QueueEmojiReload()
+        {
+            CancellationTokenSource cts;
+            lock (_reloadLock)
+            {
+                _reloadCts?.Cancel();
+                _reloadCts?.Dispose();
+                _reloadCts = new CancellationTokenSource();
+                cts = _reloadCts;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(ReloadDebounceInterval, cts.Token);
+                    var loadTask = await Dispatcher.InvokeAsync(() => LoadEmojiData(cts.Token));
+                    await loadTask;
+                }
+                catch (OperationCanceledException)
+                {
+                    // 忽略被取消的刷新请求
+                }
+                catch (Exception ex)
+                {
+                    _ = Dispatcher.InvokeAsync(() => ShowToast($"刷新失败: {ex.Message}", ToastType.Error));
+                }
+            });
         }
 
         private async void Window_Loaded(object sender, RoutedEventArgs e)
@@ -363,9 +384,10 @@ namespace EmojiManager
         /// <summary>
         /// 刷新表情数据（供设置窗口调用）
         /// </summary>
-        public async Task RefreshEmojiData()
+        public Task RefreshEmojiData()
         {
-            await LoadEmojiData();
+            QueueEmojiReload();
+            return Task.CompletedTask;
         }
 
         private async Task InitializeWebView()
@@ -391,12 +413,12 @@ namespace EmojiManager
             WebView.NavigateToString(htmlContent);
 
             // 等待页面加载完成后加载表情数据
-            WebView.NavigationCompleted += async (_, e) =>
+            WebView.NavigationCompleted += (_, e) =>
             {
                 if (e.IsSuccess)
                 {
-                    await LoadEmojiData();
-                    await UpdatePinnedState();
+                    QueueEmojiReload();
+                    _ = UpdatePinnedState();
                 }
             };
         }
@@ -479,51 +501,91 @@ namespace EmojiManager
             return GetEmbeddedHtml();
         }
 
-        private async Task LoadEmojiData()
+        private async Task LoadEmojiData(CancellationToken cancellationToken = default)
         {
-            // 清理无效的最近表情
-            _settings.CleanupRecentEmojis();
-
-            var emojiData = ScanEmojiDirectory(_settings.EmojiBasePath);
-
-            // 构建最近表情文件夹
-            var recentFolder = new EmojiFolder
+            if (WebView?.CoreWebView2 == null)
             {
-                Name = "最近使用",
-                Path = "",
-                Images = [.. _settings.RecentEmojis],
-                Children = []
-            };
-
-            // 将最近表情插入到文件夹列表的最前面（只有当有最近表情时）
-            var allFolders = new List<EmojiFolder>();
-            if (recentFolder.Images.Count > 0)
-            {
-                allFolders.Add(recentFolder);
-            }
-            allFolders.AddRange(emojiData);
-
-            // 加载所有文件夹的缩放配置
-            var folderScales = LoadAllFolderScales(_settings.EmojiBasePath);
-            
-            // 添加最近使用表情的缩放配置
-            if (_settings.RecentEmojiScale != 1.0)
-            {
-                folderScales[""] = _settings.RecentEmojiScale;
+                return;
             }
 
-            var dataObject = new
+            await _loadSemaphore.WaitAsync(cancellationToken);
+            try
             {
-                folders = allFolders,
-                basePath = _settings.EmojiBasePath,
-                recentLimit = _settings.RecentEmojisLimit,
-                enableFilenameSearch = _settings.EnableFilenameSearch,
-                baseThumbnailSize = _settings.BaseThumbnailSize,
-                enableCtrlScrollResize = _settings.EnableCtrlScrollResize,
-                folderScales
-            };
-            var json = JsonSerializer.Serialize(dataObject, JsonOptions);
-            await WebView.CoreWebView2.ExecuteScriptAsync($"loadEmojiData({json})");
+                // 清理无效的最近表情
+                _settings.CleanupRecentEmojis();
+
+                var basePath = _settings.EmojiBasePath;
+                var recentEmojis = _settings.RecentEmojis.ToList();
+                var recentLimit = _settings.RecentEmojisLimit;
+                var enableFilenameSearch = _settings.EnableFilenameSearch;
+                var baseThumbnailSize = _settings.BaseThumbnailSize;
+                var enableCtrlScrollResize = _settings.EnableCtrlScrollResize;
+                var recentEmojiScale = _settings.RecentEmojiScale;
+
+                var dataObject = await Task.Run(() =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var emojiData = ScanEmojiDirectory(basePath);
+
+                    // 构建最近表情文件夹
+                    var recentFolder = new EmojiFolder
+                    {
+                        Name = "最近使用",
+                        Path = "",
+                        Images = [.. recentEmojis],
+                        Children = []
+                    };
+
+                    // 将最近表情插入到文件夹列表的最前面（只有当有最近表情时）
+                    var allFolders = new List<EmojiFolder>();
+                    if (recentFolder.Images.Count > 0)
+                    {
+                        allFolders.Add(recentFolder);
+                    }
+                    allFolders.AddRange(emojiData);
+
+                    // 加载所有文件夹的缩放配置
+                    var folderScales = LoadAllFolderScales(basePath);
+                    
+                    // 添加最近使用表情的缩放配置
+                    if (recentEmojiScale != 1.0)
+                    {
+                        folderScales[""] = recentEmojiScale;
+                    }
+
+                    return new
+                    {
+                        folders = allFolders,
+                        basePath,
+                        recentLimit,
+                        enableFilenameSearch,
+                        baseThumbnailSize,
+                        enableCtrlScrollResize,
+                        folderScales
+                    };
+                }, cancellationToken);
+
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                var json = JsonSerializer.Serialize(dataObject, JsonOptions);
+                await WebView.CoreWebView2.ExecuteScriptAsync($"loadEmojiData({json})");
+            }
+            catch (OperationCanceledException)
+            {
+                // 忽略被取消的刷新
+            }
+            catch (Exception ex)
+            {
+                await ShowToast($"刷新失败: {ex.Message}", ToastType.Error);
+            }
+            finally
+            {
+                _loadSemaphore.Release();
+            }
         }
 
         private List<EmojiFolder> ScanEmojiDirectory(string path)
@@ -591,8 +653,7 @@ namespace EmojiManager
                 {
                     try
                     {
-                        var bytes = File.ReadAllBytes(file);
-                        if (ImageFormatDetector.DetectImageFormat(bytes) != null)
+                        if (ImageFormatDetector.DetectImageFormatFromFile(file) != null)
                         {
                             validImages.Add(file);
                         }
@@ -683,8 +744,7 @@ namespace EmojiManager
                     {
                         try
                         {
-                            var bytes = File.ReadAllBytes(file);
-                            var actualFormat = ImageFormatDetector.DetectImageFormat(bytes);
+                            var actualFormat = ImageFormatDetector.DetectImageFormatFromFile(file);
 
                             if (actualFormat != null)
                             {
@@ -818,8 +878,8 @@ namespace EmojiManager
                         // 记录到最近使用表情
                         _settings.AddRecentEmoji(data.Path);
 
-                        // 立即刷新表情数据以更新最近表情列表
-                        await LoadEmojiData();
+                        // 请求刷新表情数据以更新最近表情列表
+                        QueueEmojiReload();
 
                         _shouldPasteAfterDeactivate = true; // 设置粘贴标志
                         if (!_isPinned)
@@ -972,6 +1032,11 @@ namespace EmojiManager
                     : "没有添加任何文件";
 
                 await ShowToast(message, successCount > 0 ? ToastType.Success : ToastType.Info);
+
+                if (successCount > 0)
+                {
+                    QueueEmojiReload();
+                }
             }
             catch (Exception ex)
             {
@@ -985,7 +1050,6 @@ namespace EmojiManager
             _settings.IsPinned = _isPinned;
             Topmost = _isPinned; // 根据钉住状态设置窗口置顶
             _ = UpdatePinnedState();
-            SaveWindowState(); // 保存状态
         }
 
         private async Task UpdatePinnedState()
@@ -1144,7 +1208,7 @@ namespace EmojiManager
                 _settings.Save();
 
                 // 刷新表情数据
-                await LoadEmojiData();
+                QueueEmojiReload();
 
                 await ShowToast("文件已删除", ToastType.Success);
             }
@@ -1226,6 +1290,8 @@ namespace EmojiManager
 
         private void Window_Deactivated(object sender, EventArgs e)
         {
+            SaveWindowState();
+
             // 如果钉住了，不自动隐藏
             if (_isPinned)
                 return;
@@ -1315,10 +1381,10 @@ namespace EmojiManager
                     WebView.NavigationCompleted -= OnNavigationCompleted;
                     if (e.IsSuccess)
                     {
-                        Dispatcher.InvokeAsync(async () =>
+                        Dispatcher.InvokeAsync(() =>
                         {
-                            await LoadEmojiData();
-                            await UpdatePinnedState();
+                            QueueEmojiReload();
+                            _ = UpdatePinnedState();
                         });
                     }
                 }
@@ -1331,7 +1397,7 @@ namespace EmojiManager
 
                 // 如果刷新失败，至少尝试重新加载数据
                 await Task.Delay(200);
-                await LoadEmojiData();
+                QueueEmojiReload();
             }
         }
 
@@ -1362,12 +1428,10 @@ namespace EmojiManager
 
         private void Window_LocationChanged(object sender, EventArgs e)
         {
-            SaveWindowState();
         }
 
         private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
         {
-            SaveWindowState();
         }
 
         private void SettingsButton_Click(object sender, RoutedEventArgs e)
@@ -1423,6 +1487,11 @@ namespace EmojiManager
                 // 停止前台窗口追踪
                 _foregroundWindowTracker?.Stop();
                 _foregroundWindowTracker = null;
+
+                // 取消可能的刷新任务
+                _reloadCts?.Cancel();
+                _reloadCts?.Dispose();
+                _reloadCts = null;
             }
             catch
             {

@@ -11,6 +11,9 @@ namespace EmojiManager
     /// </summary>
     public static class ImageFormatDetector
     {
+        private const int HeaderBufferSize = 32;
+        private const long DefaultFallbackLimitBytes = 10 * 1024 * 1024;
+
         /// <summary>
         /// 格式到扩展名的映射
         /// </summary>
@@ -63,6 +66,57 @@ namespace EmojiManager
             catch
             {
                 // 如果System.Drawing也失败了，返回null
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// 从文件路径检测图像格式（优先读取文件头，避免加载整个文件到内存）
+        /// </summary>
+        /// <param name="filePath">文件路径</param>
+        /// <param name="allowDeepScan">是否允许在文件头检测失败时进行深度检测</param>
+        /// <param name="maxDeepScanBytes">允许深度检测的最大文件大小（字节）</param>
+        /// <returns>实际的文件扩展名，如果不是图像文件则返回null</returns>
+        public static string? DetectImageFormatFromFile(string filePath, bool allowDeepScan = true, long maxDeepScanBytes = DefaultFallbackLimitBytes)
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+                return null;
+
+            try
+            {
+                using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                var header = new byte[HeaderBufferSize];
+                var bytesRead = stream.Read(header, 0, header.Length);
+
+                if (bytesRead < 8)
+                    return null;
+
+                if (bytesRead < header.Length)
+                {
+                    Array.Resize(ref header, bytesRead);
+                }
+
+                var quickDetected = DetectByFileHeader(header);
+                if (quickDetected != null)
+                    return quickDetected;
+
+                if (!allowDeepScan)
+                    return null;
+
+                if (maxDeepScanBytes > 0 && stream.Length > maxDeepScanBytes)
+                    return null;
+
+                stream.Position = 0;
+                using var image = Image.FromStream(stream, useEmbeddedColorManagement: false, validateImageData: false);
+                if (FormatToExtension.TryGetValue(image.RawFormat, out var extension))
+                {
+                    return extension;
+                }
+            }
+            catch
+            {
+                // 忽略文件读取或解析错误
             }
 
             return null;

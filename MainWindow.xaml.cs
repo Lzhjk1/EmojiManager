@@ -916,8 +916,8 @@ namespace EmojiManager
                         // 记录到最近使用表情
                         _settings.AddRecentEmoji(data.Path);
 
-                        // 请求刷新表情数据以更新最近表情列表
-                        QueueEmojiReload();
+                        // 只更新最近表情分组，避免全量刷新
+                        await UpdateRecentEmojisOnly();
 
                         _shouldPasteAfterDeactivate = true; // 设置粘贴标志
                         if (!_isPinned)
@@ -975,6 +975,18 @@ namespace EmojiManager
 
             await WebView.CoreWebView2.ExecuteScriptAsync(
                 $"handleMessage({{type: 'showToast', text: '{message.Replace("'", "\\'")}', toastType: '{toastTypeStr}'}})");
+        }
+
+        private async Task UpdateRecentEmojisOnly()
+        {
+            if (WebView?.CoreWebView2 == null)
+            {
+                return;
+            }
+
+            var recentEmojis = _settings.RecentEmojis.ToList();
+            var json = JsonSerializer.Serialize(recentEmojis, JsonOptions);
+            await WebView.CoreWebView2.ExecuteScriptAsync($"updateRecentEmojis({json})");
         }
 
         [GeneratedRegex(@"^[a-fA-F0-9]{32}$")]

@@ -688,15 +688,110 @@
                 emojiData.unshift(recentFolder);
             }
 
-            // 重新应用搜索过滤和渲染
+            const contentRoot = document.getElementById('content');
+            const recentHeader = contentRoot.querySelector('.folder-header[data-folder-path=""]');
+            const recentFolder = emojiData.length > 0 && emojiData[0].Name === '最近使用' ? emojiData[0] : null;
+
             if (currentSearchTerm) {
-                filteredData = filterFolderRecursive(emojiData, currentSearchTerm.toLowerCase());
-            } else {
-                filteredData = emojiData;
+                const searchTerm = currentSearchTerm.toLowerCase();
+                const filteredRecent = recentFolder ? filterFolderRecursive([recentFolder], searchTerm) : [];
+                const recentIndex = filteredData.findIndex(folder => folder.Name === '最近使用' && (folder.Path === '' || folder.Path === null));
+
+                if (filteredRecent.length === 0) {
+                    if (recentIndex !== -1) {
+                        filteredData.splice(recentIndex, 1);
+                    }
+                    if (recentHeader) {
+                        const folderDiv = recentHeader.parentElement;
+                        if (folderDiv) {
+                            disposeImagesInContainer(folderDiv);
+                            folderDiv.remove();
+                        }
+                    }
+                    return;
+                }
+
+                const filteredRecentFolder = filteredRecent[0];
+                if (recentIndex === -1) {
+                    filteredData.unshift(filteredRecentFolder);
+                } else {
+                    filteredData[recentIndex] = filteredRecentFolder;
+                }
+
+                if (!recentHeader) {
+                    const container = document.createElement('div');
+                    renderFolder(filteredRecentFolder, container, '');
+                    const folderDiv = container.firstElementChild;
+                    if (folderDiv) {
+                        contentRoot.prepend(folderDiv);
+                    }
+                    return;
+                }
+
+                const countElement = recentHeader.querySelector('.folder-count');
+                if (countElement) {
+                    countElement.textContent = getTotalImageCount(filteredRecentFolder);
+                }
+
+                const arrow = recentHeader.querySelector('.folder-arrow');
+                if (arrow) {
+                    arrow.classList.add('expanded');
+                }
+
+                const recentContent = recentHeader.nextElementSibling;
+                if (!recentContent) {
+                    return;
+                }
+
+                recentContent.classList.add('expanded');
+                clearFolderContent(recentContent);
+                buildFolderContent(filteredRecentFolder, recentContent, filteredRecentFolder.Name);
+                return;
             }
 
-            renderFolders();
-            restoreState(); // 恢复状态
+            filteredData = emojiData;
+
+            if (!recentFolder) {
+                if (recentHeader) {
+                    const folderDiv = recentHeader.parentElement;
+                    if (folderDiv) {
+                        disposeImagesInContainer(folderDiv);
+                        folderDiv.remove();
+                    }
+                }
+                expandedFolders.delete('');
+                return;
+            }
+
+            if (!recentHeader) {
+                const container = document.createElement('div');
+                renderFolder(recentFolder, container, '');
+                const folderDiv = container.firstElementChild;
+                if (folderDiv) {
+                    contentRoot.prepend(folderDiv);
+                }
+                expandedFolders.add('');
+                return;
+            }
+
+            const countElement = recentHeader.querySelector('.folder-count');
+            if (countElement) {
+                countElement.textContent = getTotalImageCount(recentFolder);
+            }
+
+            const arrow = recentHeader.querySelector('.folder-arrow');
+            if (arrow) {
+                arrow.classList.add('expanded');
+            }
+
+            const recentContent = recentHeader.nextElementSibling;
+            if (!recentContent) {
+                return;
+            }
+
+            recentContent.classList.add('expanded');
+            clearFolderContent(recentContent);
+            buildFolderContent(recentFolder, recentContent, recentFolder.Name);
         }
 
         function updatePinnedState(pinned) {

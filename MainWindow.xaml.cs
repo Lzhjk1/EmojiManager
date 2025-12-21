@@ -526,7 +526,7 @@ namespace EmojiManager
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    var emojiData = ScanEmojiDirectory(basePath);
+                    var emojiData = ScanEmojiDirectory(basePath, cancellationToken);
 
                     // 构建最近表情文件夹
                     var recentFolder = new EmojiFolder
@@ -588,7 +588,7 @@ namespace EmojiManager
             }
         }
 
-        private List<EmojiFolder> ScanEmojiDirectory(string path)
+        private List<EmojiFolder> ScanEmojiDirectory(string path, CancellationToken cancellationToken)
         {
             var result = new List<EmojiFolder>();
 
@@ -600,12 +600,13 @@ namespace EmojiManager
                 var directories = Directory.GetDirectories(path);
                 foreach (var dir in directories)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var folder = new EmojiFolder
                     {
                         Name = Path.GetFileName(dir),
                         Path = dir,
-                        Images = GetImages(dir),
-                        Children = ScanEmojiDirectory(dir)
+                        Images = GetImages(dir, cancellationToken),
+                        Children = ScanEmojiDirectory(dir, cancellationToken)
                     };
 
                     if (folder.Images.Count > 0 || folder.Children.Count > 0)
@@ -622,10 +623,12 @@ namespace EmojiManager
             return result;
         }
 
-        private List<string> GetImages(string path)
+        private List<string> GetImages(string path, CancellationToken cancellationToken)
         {
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 var validImages = new List<string>();
                 var supportedExtensions = ImageFormatDetector.GetSupportedExtensions();
 
@@ -651,6 +654,7 @@ namespace EmojiManager
                 // 对可疑文件进行格式检测
                 foreach (var file in suspiciousFiles)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     try
                     {
                         if (ImageFormatDetector.DetectImageFormatFromFile(file) != null)
@@ -713,18 +717,24 @@ namespace EmojiManager
         /// 修正指定目录下所有图片文件的扩展名
         /// </summary>
         /// <param name="rootPath">要处理的根目录路径</param>
+        /// <param name="progress">进度回调</param>
         /// <returns>修正结果统计</returns>
-        public static async Task<(int corrected, int skipped, int errors)> CorrectImageExtensions(string rootPath)
+        public static async Task<(int corrected, int skipped, int errors)> CorrectImageExtensions(string rootPath, IProgress<ImageCorrectionProgress>? progress = null)
         {
             var correctedCount = 0;
             var skippedCount = 0;
             var errorCount = 0;
+            var processedCount = 0;
+            var totalFiles = 0;
 
             try
             {
                 await Task.Run(() =>
                 {
-                    ProcessDirectory(rootPath, ref correctedCount, ref skippedCount, ref errorCount);
+                    totalFiles = CountFilesSafe(rootPath);
+                    progress?.Report(new ImageCorrectionProgress(0, totalFiles));
+                    ProcessDirectory(rootPath, ref correctedCount, ref skippedCount, ref errorCount, ref processedCount, totalFiles, progress);
+                    progress?.Report(new ImageCorrectionProgress(processedCount, totalFiles));
                 });
             }
             catch
@@ -734,8 +744,28 @@ namespace EmojiManager
 
             return (correctedCount, skippedCount, errorCount);
 
-            static void ProcessDirectory(string directory, ref int corrected, ref int skipped, ref int errors)
+            static int CountFilesSafe(string directory)
             {
+                try
+                {
+                    return Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).Count();
+                }
+                catch
+                {
+                    return 0;
+                }
+            }
+
+            static void ProcessDirectory(
+                string directory,
+                ref int corrected,
+                ref int skipped,
+                ref int errors,
+                ref int processed,
+                int total,
+                IProgress<ImageCorrectionProgress>? progress)
+            {
+                const int ReportBatchSize = 25;
                 try
                 {
                     // 处理当前目录的文件
@@ -775,13 +805,21 @@ namespace EmojiManager
                         {
                             errors++;
                         }
+                        finally
+                        {
+                            processed++;
+                            if (progress != null && (processed % ReportBatchSize == 0 || (total > 0 && processed == total)))
+                            {
+                                progress.Report(new ImageCorrectionProgress(processed, total));
+                            }
+                        }
                     }
 
                     // 递归处理子目录
                     var subdirectories = Directory.GetDirectories(directory);
                     foreach (var subdirectory in subdirectories)
                     {
-                        ProcessDirectory(subdirectory, ref corrected, ref skipped, ref errors);
+                        ProcessDirectory(subdirectory, ref corrected, ref skipped, ref errors, ref processed, total, progress);
                     }
                 }
                 catch
@@ -1065,24 +1103,27 @@ namespace EmojiManager
                 var fileList = new System.Collections.Specialized.StringCollection { imagePath };
                 dataObject.SetFileDropList(fileList);
 
-                // 设置图像数据以确保QQ能正确处理
-                try
+                if (_settings.EnableLegacyClipboardCompatibility)
                 {
-                    await using var stream = new FileStream(imagePath, FileMode.Open, FileAccess.Read);
-                    var bitmapImage = new System.Windows.Media.Imaging.BitmapImage();
-                    bitmapImage.BeginInit();
-                    bitmapImage.StreamSource = stream;
-                    bitmapImage.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
-                    // 添加 IgnoreColorProfile 选项来忽略 ICC profile
-                    bitmapImage.CreateOptions = System.Windows.Media.Imaging.BitmapCreateOptions.IgnoreColorProfile;
-                    bitmapImage.EndInit();
-                    bitmapImage.Freeze();
-                    dataObject.SetImage(bitmapImage);
-                }
-                catch
-                {
-                    // 如果加载图像失败，仍然可以使用文件列表方式
-                    // 大多数程序都支持从文件列表粘贴
+                    // 设置图像数据以确保怀旧版QQ能正确处理
+                    try
+                    {
+                        await using var stream = new FileStream(imagePath, FileMode.Open, FileAccess.Read);
+                        var bitmapImage = new System.Windows.Media.Imaging.BitmapImage();
+                        bitmapImage.BeginInit();
+                        bitmapImage.StreamSource = stream;
+                        bitmapImage.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                        // 添加 IgnoreColorProfile 选项来忽略 ICC profile
+                        bitmapImage.CreateOptions = System.Windows.Media.Imaging.BitmapCreateOptions.IgnoreColorProfile;
+                        bitmapImage.EndInit();
+                        bitmapImage.Freeze();
+                        dataObject.SetImage(bitmapImage);
+                    }
+                    catch
+                    {
+                        // 如果加载图像失败，仍然可以使用文件列表方式
+                        // 大多数程序都支持从文件列表粘贴
+                    }
                 }
 
                 // 设置剪贴板（copy=false）
@@ -1626,6 +1667,18 @@ namespace EmojiManager
                 Console.WriteLine($"Failed to delete folder scale: {ex.Message}");
             }
         }
+    }
+
+    public readonly struct ImageCorrectionProgress
+    {
+        public ImageCorrectionProgress(int processed, int total)
+        {
+            Processed = processed;
+            Total = total;
+        }
+
+        public int Processed { get; }
+        public int Total { get; }
     }
 
     public class EmojiFolder

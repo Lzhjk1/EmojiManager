@@ -58,6 +58,7 @@ namespace EmojiManager
             chkEnableFilenameSearch.IsChecked = _settings.EnableFilenameSearch;
             txtBaseThumbnailSize.Text = _settings.BaseThumbnailSize.ToString();
             chkEnableCtrlScrollResize.IsChecked = _settings.EnableCtrlScrollResize;
+            chkEnableLegacyClipboard.IsChecked = _settings.EnableLegacyClipboardCompatibility;
             
             UpdateHotkeyStatus("当前快捷键: " + _settings.HotkeyDisplayName, false);
         }
@@ -359,6 +360,7 @@ namespace EmojiManager
             _settings.EnableFilenameSearch = chkEnableFilenameSearch.IsChecked == true;
             _settings.BaseThumbnailSize = thumbnailSize;
             _settings.EnableCtrlScrollResize = chkEnableCtrlScrollResize.IsChecked == true;
+            _settings.EnableLegacyClipboardCompatibility = chkEnableLegacyClipboard.IsChecked == true;
 
             // 如果限制数量减少了，需要裁剪现有的最近表情列表
             while (_settings.RecentEmojis.Count > _settings.RecentEmojisLimit)
@@ -439,9 +441,32 @@ namespace EmojiManager
                 btnCorrectExtensions.Content = "正在修正中...";
                 txtCorrectionStatus.Text = "正在扫描和修正文件，请稍候...";
                 txtCorrectionStatus.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Orange);
+                progressCorrection.Visibility = Visibility.Visible;
+                progressCorrection.IsIndeterminate = true;
+                progressCorrection.Value = 0;
+                progressCorrection.Maximum = 1;
 
                 // 执行修正操作
-                var (corrected, skipped, errors) = await MainWindow.CorrectImageExtensions(txtEmojiPath.Text);
+                var progress = new Progress<ImageCorrectionProgress>(update =>
+                {
+                    if (update.Total > 0)
+                    {
+                        progressCorrection.IsIndeterminate = false;
+                        progressCorrection.Maximum = update.Total;
+                        progressCorrection.Value = Math.Min(update.Processed, update.Total);
+                        txtCorrectionStatus.Text = $"正在修正文件: {update.Processed}/{update.Total}";
+                    }
+                    else
+                    {
+                        progressCorrection.IsIndeterminate = true;
+                        if (update.Processed > 0)
+                        {
+                            txtCorrectionStatus.Text = $"正在修正文件: {update.Processed}";
+                        }
+                    }
+                });
+
+                var (corrected, skipped, errors) = await MainWindow.CorrectImageExtensions(txtEmojiPath.Text, progress);
 
                 // 显示结果
                 var message = $"修正完成！\n修正：{corrected} 个文件\n跳过：{skipped} 个文件\n错误：{errors} 个文件";
@@ -478,6 +503,9 @@ namespace EmojiManager
                 // 恢复按钮状态
                 btnCorrectExtensions.IsEnabled = true;
                 btnCorrectExtensions.Content = "开始修正文件扩展名";
+                progressCorrection.Visibility = Visibility.Collapsed;
+                progressCorrection.IsIndeterminate = false;
+                progressCorrection.Value = 0;
             }
         }
 

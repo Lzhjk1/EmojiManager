@@ -98,6 +98,11 @@ namespace EmojiManager
         public bool EnableCtrlScrollResize { get; set; } = true;
 
         /// <summary>
+        /// 是否启用剪贴板兼容模式（同时写入图片数据以兼容旧版QQ）
+        /// </summary>
+        public bool EnableLegacyClipboardCompatibility { get; set; }
+
+        /// <summary>
         /// 最近使用表情分组的缩放比例
         /// </summary>
         public double RecentEmojiScale { get; set; } = 1.0;

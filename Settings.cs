@@ -108,12 +108,6 @@ namespace EmojiManager
         public double RecentEmojiScale { get; set; } = 1.0;
 
         /// <summary>
-        /// 图片备注字典 (Key: 图片相对路径, Value: 备注)
-        /// 存储相对路径是为了保证表情包文件夹移动后备注仍然有效
-        /// </summary>
-        public Dictionary<string, string> ImageRemarks { get; set; } = new Dictionary<string, string>();
-
-        /// <summary>
         /// 加载设置
         /// </summary>
         public static Settings Load()

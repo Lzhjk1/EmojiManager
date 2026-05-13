@@ -554,13 +554,8 @@ namespace EmojiManager
                         folderScales[""] = recentEmojiScale;
                     }
 
-                    // 转换为绝对路径字典供前端使用
-                    var absoluteRemarks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var kvp in _settings.ImageRemarks)
-                    {
-                        var absPath = Path.Combine(basePath, kvp.Key);
-                        absoluteRemarks[absPath] = kvp.Value;
-                    }
+                    // 加载所有子文件夹的图片备注，聚合为以绝对路径为 Key 的字典
+                    var absoluteRemarks = LoadAllFolderRemarks(basePath);
 
                     return new
                     {
@@ -910,17 +905,7 @@ namespace EmojiManager
                                 var remark = remarkElement.GetString();
                                 if (!string.IsNullOrEmpty(imgPath))
                                 {
-                                    // 转换为相对路径
-                                    var relativePath = Path.GetRelativePath(_settings.EmojiBasePath, imgPath);
-                                    if (string.IsNullOrEmpty(remark))
-                                    {
-                                        _settings.ImageRemarks.Remove(relativePath);
-                                    }
-                                    else
-                                    {
-                                        _settings.ImageRemarks[relativePath] = remark;
-                                    }
-                                    _settings.Save();
+                                    SaveImageRemark(imgPath, remark ?? string.Empty);
                                 }
                             }
                             return;
@@ -1699,7 +1684,7 @@ namespace EmojiManager
                     Console.WriteLine($"Folder not found: {folderPath}");
                     return;
                 }
-                
+
                 var scaleFile = Path.Combine(folderPath, "emoji_scale.json");
                 if (File.Exists(scaleFile))
                 {
@@ -1709,6 +1694,115 @@ namespace EmojiManager
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to delete folder scale: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 递归加载所有文件夹的图片备注，聚合为 (图片绝对路径 -> 备注) 字典
+        /// </summary>
+        private static Dictionary<string, string> LoadAllFolderRemarks(string basePath)
+        {
+            var remarks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            if (!Directory.Exists(basePath))
+                return remarks;
+
+            try
+            {
+                LoadFolderRemarksRecursive(basePath, remarks);
+            }
+            catch { }
+
+            return remarks;
+        }
+
+        private static void LoadFolderRemarksRecursive(string path, Dictionary<string, string> remarks)
+        {
+            try
+            {
+                var remarkFile = Path.Combine(path, "emoji_remarks.json");
+                if (File.Exists(remarkFile))
+                {
+                    try
+                    {
+                        var json = File.ReadAllText(remarkFile);
+                        var fileRemarks = JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonOptions);
+                        if (fileRemarks != null)
+                        {
+                            foreach (var kvp in fileRemarks)
+                            {
+                                var absPath = Path.Combine(path, kvp.Key);
+                                remarks[absPath] = kvp.Value;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                foreach (var dir in Directory.GetDirectories(path))
+                {
+                    LoadFolderRemarksRecursive(dir, remarks);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// 保存或清除单张图片的备注。备注为空时移除条目；当所在文件夹没有任何备注时删除整个 json 文件。
+        /// </summary>
+        private static void SaveImageRemark(string imagePath, string remark)
+        {
+            try
+            {
+                var folderPath = Path.GetDirectoryName(imagePath);
+                if (string.IsNullOrEmpty(folderPath) || !Directory.Exists(folderPath))
+                {
+                    Console.WriteLine($"Folder not found for image: {imagePath}");
+                    return;
+                }
+
+                var fileName = Path.GetFileName(imagePath);
+                var remarkFile = Path.Combine(folderPath, "emoji_remarks.json");
+
+                var fileRemarks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                if (File.Exists(remarkFile))
+                {
+                    try
+                    {
+                        var existingJson = File.ReadAllText(remarkFile);
+                        var existing = JsonSerializer.Deserialize<Dictionary<string, string>>(existingJson, JsonOptions);
+                        if (existing != null)
+                        {
+                            foreach (var kvp in existing)
+                                fileRemarks[kvp.Key] = kvp.Value;
+                        }
+                    }
+                    catch { }
+                }
+
+                if (string.IsNullOrEmpty(remark))
+                {
+                    fileRemarks.Remove(fileName);
+                }
+                else
+                {
+                    fileRemarks[fileName] = remark;
+                }
+
+                if (fileRemarks.Count == 0)
+                {
+                    if (File.Exists(remarkFile))
+                        File.Delete(remarkFile);
+                }
+                else
+                {
+                    var json = JsonSerializer.Serialize(fileRemarks, JsonOptions);
+                    File.WriteAllText(remarkFile, json);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to save image remark: {ex.Message}");
             }
         }
     }

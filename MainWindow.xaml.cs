@@ -792,14 +792,16 @@ namespace EmojiManager
 
                                     if (File.Exists(newFilePath))
                                     {
-                                        // 如果目标文件已存在，删除原文件
+                                        // 如果目标文件已存在，删除原文件；同步清理原文件的孤儿备注
                                         File.Delete(file);
+                                        SaveImageRemark(file, string.Empty);
                                         skipped++;
                                     }
                                     else
                                     {
-                                        // 重命名文件
+                                        // 重命名文件；同步迁移备注的键名
                                         File.Move(file, newFilePath);
+                                        RenameImageRemark(file, newFilePath);
                                         corrected++;
                                     }
                                 }
@@ -1745,6 +1747,62 @@ namespace EmojiManager
                 }
             }
             catch { }
+        }
+
+        /// <summary>
+        /// 同步图片重命名导致的备注键名变化。仅处理同文件夹内改名（修扩展名场景）。
+        /// 旧文件无备注则不操作；目标已有备注则保留目标不覆盖。
+        /// </summary>
+        private static void RenameImageRemark(string oldImagePath, string newImagePath)
+        {
+            try
+            {
+                var folderPath = Path.GetDirectoryName(oldImagePath);
+                if (string.IsNullOrEmpty(folderPath) || !Directory.Exists(folderPath))
+                    return;
+
+                if (!string.Equals(folderPath, Path.GetDirectoryName(newImagePath), StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                var remarkFile = Path.Combine(folderPath, "emoji_remarks.json");
+                if (!File.Exists(remarkFile)) return;
+
+                Dictionary<string, string>? existing;
+                try
+                {
+                    var existingJson = File.ReadAllText(remarkFile);
+                    existing = JsonSerializer.Deserialize<Dictionary<string, string>>(existingJson, JsonOptions);
+                }
+                catch { return; }
+
+                if (existing == null || existing.Count == 0) return;
+
+                var remarks = new Dictionary<string, string>(existing, StringComparer.OrdinalIgnoreCase);
+                var oldName = Path.GetFileName(oldImagePath);
+                var newName = Path.GetFileName(newImagePath);
+
+                if (!remarks.TryGetValue(oldName, out var remark)) return;
+
+                remarks.Remove(oldName);
+                if (!remarks.ContainsKey(newName))
+                {
+                    remarks[newName] = remark;
+                }
+
+                if (remarks.Count == 0)
+                {
+                    File.Delete(remarkFile);
+                }
+                else
+                {
+                    var json = JsonSerializer.Serialize(remarks, JsonOptions);
+                    File.WriteAllText(remarkFile, json);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to rename image remark: {ex.Message}");
+            }
         }
 
         /// <summary>

@@ -1,4 +1,4 @@
-﻿using Hardcodet.Wpf.TaskbarNotification;
+using Hardcodet.Wpf.TaskbarNotification;
 using Microsoft.Web.WebView2.Core;
 using System;
 using System.Collections.Generic;
@@ -554,6 +554,14 @@ namespace EmojiManager
                         folderScales[""] = recentEmojiScale;
                     }
 
+                    // 转换为绝对路径字典供前端使用
+                    var absoluteRemarks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var kvp in _settings.ImageRemarks)
+                    {
+                        var absPath = Path.Combine(basePath, kvp.Key);
+                        absoluteRemarks[absPath] = kvp.Value;
+                    }
+
                     return new
                     {
                         folders = allFolders,
@@ -562,7 +570,8 @@ namespace EmojiManager
                         enableFilenameSearch,
                         baseThumbnailSize,
                         enableCtrlScrollResize,
-                        folderScales
+                        folderScales,
+                        imageRemarks = absoluteRemarks
                     };
                 }, cancellationToken);
 
@@ -891,6 +900,29 @@ namespace EmojiManager
                         case "resetRecentEmojiScale":
                             _settings.RecentEmojiScale = 1.0;
                             _settings.Save();
+                            return;
+                            
+                        case "setRemark":
+                            if (root.TryGetProperty("imagePath", out var imgPathElement) &&
+                                root.TryGetProperty("remark", out var remarkElement))
+                            {
+                                var imgPath = imgPathElement.GetString();
+                                var remark = remarkElement.GetString();
+                                if (!string.IsNullOrEmpty(imgPath))
+                                {
+                                    // 转换为相对路径
+                                    var relativePath = Path.GetRelativePath(_settings.EmojiBasePath, imgPath);
+                                    if (string.IsNullOrEmpty(remark))
+                                    {
+                                        _settings.ImageRemarks.Remove(relativePath);
+                                    }
+                                    else
+                                    {
+                                        _settings.ImageRemarks[relativePath] = remark;
+                                    }
+                                    _settings.Save();
+                                }
+                            }
                             return;
                     }
                 }

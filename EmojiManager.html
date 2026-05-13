@@ -400,6 +400,10 @@
 
     <!-- 右键菜单 -->
     <div id="context-menu">
+        <div class="context-menu-item" id="menu-set-remark">
+            <span class="context-menu-icon">📝</span>
+            <span>设置备注</span>
+        </div>
         <div class="context-menu-item" id="menu-open-location">
             <span class="context-menu-icon">📁</span>
             <span>打开目录</span>
@@ -411,6 +415,18 @@
         <div class="context-menu-item danger" id="menu-delete">
             <span class="context-menu-icon">🗑️</span>
             <span>删除</span>
+        </div>
+    </div>
+
+    <!-- 备注输入对话框 -->
+    <div id="remark-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 5000; align-items: center; justify-content: center;">
+        <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); width: 300px;">
+            <h3 style="margin-bottom: 15px; font-size: 16px;">设置备注</h3>
+            <input type="text" id="remark-input" style="width: 100%; padding: 8px; background: #1e1e1e; border: 1px solid #555; color: #e0e0e0; border-radius: 4px; margin-bottom: 15px;" placeholder="输入备注，为空则清除..." />
+            <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                <button id="remark-cancel" style="padding: 6px 12px; background: #444; border: none; color: white; border-radius: 4px; cursor: pointer;">取消</button>
+                <button id="remark-save" style="padding: 6px 12px; background: #0078d4; border: none; color: white; border-radius: 4px; cursor: pointer;">保存</button>
+            </div>
         </div>
     </div>
 
@@ -427,6 +443,7 @@
         let baseThumbnailSize = 80;
         let enableCtrlScrollResize = true;
         let folderScales = {}; // 保存每个文件夹的缩放比例
+        let imageRemarks = {}; // 保存每张图片的备注
 
         // 状态保存
         let expandedFolders = new Set();
@@ -639,6 +656,7 @@
             baseThumbnailSize = data.baseThumbnailSize || 80;
             enableCtrlScrollResize = data.enableCtrlScrollResize !== false;
             folderScales = data.folderScales || {};
+            imageRemarks = data.imageRemarks || {};
 
             // 设置默认缩略图尺寸
             document.documentElement.style.setProperty('--thumbnail-size', baseThumbnailSize + 'px');
@@ -647,10 +665,10 @@
             const searchInput = document.getElementById('search-input');
             const statusBar = document.getElementById('status-bar');
             if (enableFilenameSearch) {
-                searchInput.placeholder = '搜索分组或文件名...';
+                searchInput.placeholder = '搜索分组、文件名或备注...';
                 statusBar.classList.add('show');
             } else {
-                searchInput.placeholder = '搜索表情包分组...';
+                searchInput.placeholder = '搜索表情包分组或备注...';
                 statusBar.classList.remove('show');
             }
 
@@ -882,6 +900,7 @@
                 const resetScaleItem = document.getElementById('menu-reset-scale');
                 const openLocationItem = document.getElementById('menu-open-location');
                 const deleteItem = document.getElementById('menu-delete');
+                const setRemarkItem = document.getElementById('menu-set-remark');
                 
                 // 检查是否有自定义缩放（包括最近使用表情）
                 const hasCustomScale = (folder.Path === '' || folder.Path === null) ? 
@@ -894,9 +913,10 @@
                     resetScaleItem.style.display = 'none';
                 }
                 
-                // 文件夹标题右键菜单，隐藏删除选项
+                // 文件夹标题右键菜单，隐藏删除选项和备注选项
                 openLocationItem.style.display = 'block';
                 deleteItem.style.display = 'none';
+                if (setRemarkItem) setRemarkItem.style.display = 'none';
                 
                 showContextMenu(e.clientX, e.clientY);
             });
@@ -1156,6 +1176,14 @@
                 e.preventDefault();
                 e.stopPropagation();
                 contextMenuTarget = imagePath;
+                
+                // 恢复显示所有选项
+                document.getElementById('menu-open-location').style.display = 'block';
+                document.getElementById('menu-delete').style.display = 'block';
+                document.getElementById('menu-reset-scale').style.display = 'none';
+                const setRemarkItem = document.getElementById('menu-set-remark');
+                if (setRemarkItem) setRemarkItem.style.display = 'block';
+                
                 showContextMenu(e.clientX, e.clientY);
             };
 
@@ -1201,17 +1229,32 @@
         }
 
         function showFilename(imagePath) {
-            if (!enableFilenameSearch) return;
+            const remark = imageRemarks[imagePath];
+            if (!enableFilenameSearch && !remark) return;
+            
             const filenameDisplay = document.getElementById('filename-display');
             const fileName = imagePath.split('\\').pop().split('/').pop();
-            filenameDisplay.textContent = fileName;
+            
+            if (remark) {
+                filenameDisplay.textContent = enableFilenameSearch ? `${fileName} (备注: ${remark})` : `备注: ${remark}`;
+            } else {
+                filenameDisplay.textContent = fileName;
+            }
+            
             filenameDisplay.classList.add('show');
+            // 如果未开启文件名搜索，临时显示状态栏
+            if (!enableFilenameSearch) {
+                document.getElementById('status-bar').classList.add('show');
+            }
         }
 
         function hideFilename() {
-            if (!enableFilenameSearch) return;
             const filenameDisplay = document.getElementById('filename-display');
             filenameDisplay.classList.remove('show');
+            // 如果未开启文件名搜索，隐藏状态栏
+            if (!enableFilenameSearch) {
+                document.getElementById('status-bar').classList.remove('show');
+            }
         }
 
         function getTotalImageCount(folder) {
@@ -1245,15 +1288,32 @@
                 const folderNameMatches = folder.Name.toLowerCase().includes(searchTerm);
                 const relativePathMatches = relativePath.toLowerCase().includes(searchTerm);
 
-                // 如果启用了文件名搜索，检查图片文件名
+                // 如果启用了文件名搜索或者备注搜索，检查图片
                 let matchingImages = folder.Images || [];
                 let hasMatchingImages = false;
 
-                if (enableFilenameSearch && searchTerm) {
+                if (searchTerm) {
                     matchingImages = (folder.Images || []).filter(imagePath => {
-                        const fileName = imagePath.split('\\').pop().split('/').pop();
-                        const fileNameWithoutExt = fileName.substring(0, fileName.lastIndexOf('.')) || fileName;
-                        return fileNameWithoutExt.toLowerCase().includes(searchTerm);
+                        let matches = false;
+                        
+                        // 检查文件名
+                        if (enableFilenameSearch) {
+                            const fileName = imagePath.split('\\').pop().split('/').pop();
+                            const fileNameWithoutExt = fileName.substring(0, fileName.lastIndexOf('.')) || fileName;
+                            if (fileNameWithoutExt.toLowerCase().includes(searchTerm)) {
+                                matches = true;
+                            }
+                        }
+                        
+                        // 检查备注
+                        if (!matches) {
+                            const remark = imageRemarks[imagePath];
+                            if (remark && remark.toLowerCase().includes(searchTerm)) {
+                                matches = true;
+                            }
+                        }
+                        
+                        return matches;
                     });
                     hasMatchingImages = matchingImages.length > 0;
                 }
@@ -1263,8 +1323,8 @@
                 if (folderNameMatches || relativePathMatches || filteredChildren.length > 0 || hasMatchingImages) {
                     result.push({
                         ...folder,
-                        // 如果是文件名搜索且有匹配的图片，只显示匹配的图片
-                        Images: (enableFilenameSearch && hasMatchingImages && !folderNameMatches && !relativePathMatches) ? matchingImages : folder.Images,
+                        // 如果有匹配的图片，只显示匹配的图片（除非文件夹名或路径本身就匹配，那么显示所有图片）
+                        Images: (hasMatchingImages && !folderNameMatches && !relativePathMatches) ? matchingImages : folder.Images,
                         Children: filteredChildren
                     });
                 }
@@ -1312,9 +1372,10 @@
         // 右键菜单项点击事件
         document.getElementById('menu-open-location').onclick = () => {
             if (contextMenuTarget) {
+                const targetPath = contextMenuTarget.type === 'folder-header' ? contextMenuTarget.folderPath : contextMenuTarget;
                 window.chrome.webview.postMessage(JSON.stringify({
                     type: 'openLocation',
-                    path: contextMenuTarget
+                    path: targetPath
                 }));
                 hideContextMenu();
             }
@@ -1322,14 +1383,83 @@
 
         document.getElementById('menu-delete').onclick = () => {
             if (contextMenuTarget) {
+                const targetPath = contextMenuTarget.type === 'folder-header' ? contextMenuTarget.folderPath : contextMenuTarget;
                 // 直接发送删除请求，确认对话框在C#端处理
                 window.chrome.webview.postMessage(JSON.stringify({
                     type: 'deleteImage',
-                    path: contextMenuTarget
+                    path: targetPath
                 }));
                 hideContextMenu();
             }
         };
+
+        const setRemarkMenu = document.getElementById('menu-set-remark');
+        if (setRemarkMenu) {
+            setRemarkMenu.onclick = () => {
+                if (contextMenuTarget && typeof contextMenuTarget === 'string') {
+                    const imagePath = contextMenuTarget;
+                    const currentRemark = imageRemarks[imagePath] || '';
+                    
+                    const modal = document.getElementById('remark-modal');
+                    const input = document.getElementById('remark-input');
+                    
+                    modal.dataset.imagePath = imagePath;
+                    input.value = currentRemark;
+                    
+                    modal.style.display = 'flex';
+                    input.focus();
+                    
+                    hideContextMenu();
+                }
+            };
+        }
+
+        const remarkCancelBtn = document.getElementById('remark-cancel');
+        if (remarkCancelBtn) {
+            remarkCancelBtn.onclick = () => {
+                document.getElementById('remark-modal').style.display = 'none';
+            };
+        }
+
+        const remarkSaveBtn = document.getElementById('remark-save');
+        if (remarkSaveBtn) {
+            remarkSaveBtn.onclick = () => {
+                const modal = document.getElementById('remark-modal');
+                const imagePath = modal.dataset.imagePath;
+                const newRemark = document.getElementById('remark-input').value.trim();
+                
+                if (imagePath) {
+                    imageRemarks[imagePath] = newRemark;
+                    
+                    window.chrome.webview.postMessage(JSON.stringify({
+                        type: 'setRemark',
+                        imagePath: imagePath,
+                        remark: newRemark
+                    }));
+                    
+                    showToast(newRemark ? '备注设置成功' : '备注已清除', 'success');
+                    
+                    // 刷新显示以更新搜索结果
+                    if (currentSearchTerm) {
+                        filteredData = filterFolderRecursive(emojiData, currentSearchTerm.toLowerCase());
+                        renderFolders();
+                    }
+                }
+                
+                modal.style.display = 'none';
+            };
+        }
+
+        const remarkInput = document.getElementById('remark-input');
+        if (remarkInput) {
+            remarkInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    document.getElementById('remark-save').click();
+                } else if (e.key === 'Escape') {
+                    document.getElementById('remark-cancel').click();
+                }
+            });
+        }
 
         // 点击其他地方隐藏菜单
         document.addEventListener('click', (e) => {

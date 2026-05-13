@@ -1863,6 +1863,90 @@ namespace EmojiManager
                 Console.WriteLine($"Failed to save image remark: {ex.Message}");
             }
         }
+
+        /// <summary>
+        /// 递归扫描所有子文件夹的 emoji_remarks.json，移除对应图片文件不存在的条目。
+        /// 若清理后字典为空则删除整个 json 文件。
+        /// </summary>
+        /// <returns>(清理的备注条数, 删除的空备注文件数, 处理失败的文件数)</returns>
+        public static async Task<(int orphansRemoved, int filesDeleted, int errors)> CleanupOrphanedRemarks(string rootPath)
+        {
+            var orphansRemoved = 0;
+            var filesDeleted = 0;
+            var errors = 0;
+
+            if (!Directory.Exists(rootPath))
+                return (0, 0, 0);
+
+            await Task.Run(() =>
+            {
+                Process(rootPath, ref orphansRemoved, ref filesDeleted, ref errors);
+            });
+
+            return (orphansRemoved, filesDeleted, errors);
+
+            static void Process(string directory, ref int removed, ref int deleted, ref int errCount)
+            {
+                try
+                {
+                    var remarkFile = Path.Combine(directory, "emoji_remarks.json");
+                    if (File.Exists(remarkFile))
+                    {
+                        try
+                        {
+                            var json = File.ReadAllText(remarkFile);
+                            var existing = JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonOptions);
+
+                            if (existing == null || existing.Count == 0)
+                            {
+                                File.Delete(remarkFile);
+                                deleted++;
+                            }
+                            else
+                            {
+                                var kept = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                                foreach (var kvp in existing)
+                                {
+                                    var imgPath = Path.Combine(directory, kvp.Key);
+                                    if (File.Exists(imgPath))
+                                    {
+                                        kept[kvp.Key] = kvp.Value;
+                                    }
+                                    else
+                                    {
+                                        removed++;
+                                    }
+                                }
+
+                                if (kept.Count == 0)
+                                {
+                                    File.Delete(remarkFile);
+                                    deleted++;
+                                }
+                                else if (kept.Count != existing.Count)
+                                {
+                                    var newJson = JsonSerializer.Serialize(kept, JsonOptions);
+                                    File.WriteAllText(remarkFile, newJson);
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            errCount++;
+                        }
+                    }
+
+                    foreach (var subdir in Directory.GetDirectories(directory))
+                    {
+                        Process(subdir, ref removed, ref deleted, ref errCount);
+                    }
+                }
+                catch
+                {
+                    errCount++;
+                }
+            }
+        }
     }
 
     public readonly struct ImageCorrectionProgress

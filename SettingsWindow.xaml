@@ -534,6 +534,34 @@
                                  TextWrapping="Wrap"/>
                     </Grid>
                 </GroupBox>
+
+                <!-- 备注维护 -->
+                <GroupBox Header="备注维护" Style="{StaticResource GroupBoxStyle}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0"
+                                 Text="扫描所有 emoji_remarks.json 文件，清理已不存在对应图片的失效备注条目"
+                                 Foreground="#e0e0e0" FontSize="12" Margin="5"
+                                 TextWrapping="Wrap"/>
+
+                        <Button Grid.Row="1" x:Name="btnCleanupRemarks"
+                              Content="开始清理失效备注"
+                              Click="CleanupRemarks_Click"
+                              HorizontalAlignment="Left"
+                              Margin="5,15,0,0"
+                              Style="{StaticResource ButtonStyle}"/>
+
+                        <TextBlock Grid.Row="2" x:Name="txtCleanupStatus"
+                                 Foreground="#999999" FontSize="11" Margin="5,5,0,0"
+                                 Text="仅会移除图片已不存在的备注条目，不影响仍然有效的备注"
+                                 TextWrapping="Wrap"/>
+                    </Grid>
+                </GroupBox>
             </StackPanel>
         </ScrollViewer>
 

@@ -22,6 +22,7 @@
             display: flex;
             flex-direction: column;
             height: 100vh;
+            position: relative;
         }
 
         #header {
@@ -110,6 +111,10 @@
         }
 
         #status-bar {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
             height: 24px;
             background: #2d2d2d;
             border-top: 1px solid #444;
@@ -118,6 +123,8 @@
             padding: 0 10px;
             font-size: 12px;
             color: #aaa;
+            pointer-events: none;
+            z-index: 50;
         }
 
             #status-bar.show {

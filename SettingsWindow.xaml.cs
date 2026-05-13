@@ -509,6 +509,64 @@ namespace EmojiManager
             }
         }
 
+        private async void CleanupRemarks_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(txtEmojiPath.Text))
+            {
+                MessageBox.Show("请先选择表情包路径", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (!Directory.Exists(txtEmojiPath.Text))
+            {
+                MessageBox.Show("指定的表情包路径不存在", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                btnCleanupRemarks.IsEnabled = false;
+                btnCleanupRemarks.Content = "正在清理中...";
+                txtCleanupStatus.Text = "正在扫描和清理失效备注，请稍候...";
+                txtCleanupStatus.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Orange);
+
+                var (removed, deletedFiles, errors) = await MainWindow.CleanupOrphanedRemarks(txtEmojiPath.Text);
+
+                var message = $"清理完成！\n清理失效备注：{removed} 条\n删除空备注文件：{deletedFiles} 个\n错误：{errors} 个";
+
+                if (removed > 0 || deletedFiles > 0 || errors > 0)
+                {
+                    txtCleanupStatus.Text = $"清理：{removed} 条，删除空文件：{deletedFiles}，错误：{errors}";
+                    txtCleanupStatus.Foreground = removed > 0 || deletedFiles > 0 ?
+                        new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Green) :
+                        new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Gray);
+                }
+                else
+                {
+                    txtCleanupStatus.Text = "未发现失效备注";
+                    txtCleanupStatus.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Gray);
+                }
+
+                MessageBox.Show(message, "清理完成", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                if (Owner is MainWindow mainWindow)
+                {
+                    await mainWindow.RefreshEmojiData();
+                }
+            }
+            catch (Exception ex)
+            {
+                txtCleanupStatus.Text = $"清理失败：{ex.Message}";
+                txtCleanupStatus.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Red);
+                MessageBox.Show($"清理过程中发生错误：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                btnCleanupRemarks.IsEnabled = true;
+                btnCleanupRemarks.Content = "开始清理失效备注";
+            }
+        }
+
         private async void ResetAllThumbnailSizes_Click(object sender, RoutedEventArgs e)
         {
             var result = MessageBox.Show(

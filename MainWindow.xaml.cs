@@ -1,4 +1,4 @@
-﻿using Hardcodet.Wpf.TaskbarNotification;
+using Hardcodet.Wpf.TaskbarNotification;
 using Microsoft.Web.WebView2.Core;
 using System;
 using System.Collections.Generic;
@@ -554,6 +554,9 @@ namespace EmojiManager
                         folderScales[""] = recentEmojiScale;
                     }
 
+                    // 加载所有子文件夹的图片备注，聚合为以绝对路径为 Key 的字典
+                    var absoluteRemarks = LoadAllFolderRemarks(basePath);
+
                     return new
                     {
                         folders = allFolders,
@@ -562,7 +565,8 @@ namespace EmojiManager
                         enableFilenameSearch,
                         baseThumbnailSize,
                         enableCtrlScrollResize,
-                        folderScales
+                        folderScales,
+                        imageRemarks = absoluteRemarks
                     };
                 }, cancellationToken);
 
@@ -788,14 +792,16 @@ namespace EmojiManager
 
                                     if (File.Exists(newFilePath))
                                     {
-                                        // 如果目标文件已存在，删除原文件
+                                        // 如果目标文件已存在，删除原文件；同步清理原文件的孤儿备注
                                         File.Delete(file);
+                                        SaveImageRemark(file, string.Empty);
                                         skipped++;
                                     }
                                     else
                                     {
-                                        // 重命名文件
+                                        // 重命名文件；同步迁移备注的键名
                                         File.Move(file, newFilePath);
+                                        RenameImageRemark(file, newFilePath);
                                         corrected++;
                                     }
                                 }
@@ -891,6 +897,19 @@ namespace EmojiManager
                         case "resetRecentEmojiScale":
                             _settings.RecentEmojiScale = 1.0;
                             _settings.Save();
+                            return;
+                            
+                        case "setRemark":
+                            if (root.TryGetProperty("imagePath", out var imgPathElement) &&
+                                root.TryGetProperty("remark", out var remarkElement))
+                            {
+                                var imgPath = imgPathElement.GetString();
+                                var remark = remarkElement.GetString();
+                                if (!string.IsNullOrEmpty(imgPath))
+                                {
+                                    SaveImageRemark(imgPath, remark ?? string.Empty);
+                                }
+                            }
                             return;
                     }
                 }
@@ -1667,7 +1686,7 @@ namespace EmojiManager
                     Console.WriteLine($"Folder not found: {folderPath}");
                     return;
                 }
-                
+
                 var scaleFile = Path.Combine(folderPath, "emoji_scale.json");
                 if (File.Exists(scaleFile))
                 {
@@ -1677,6 +1696,255 @@ namespace EmojiManager
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to delete folder scale: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 递归加载所有文件夹的图片备注，聚合为 (图片绝对路径 -> 备注) 字典
+        /// </summary>
+        private static Dictionary<string, string> LoadAllFolderRemarks(string basePath)
+        {
+            var remarks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            if (!Directory.Exists(basePath))
+                return remarks;
+
+            try
+            {
+                LoadFolderRemarksRecursive(basePath, remarks);
+            }
+            catch { }
+
+            return remarks;
+        }
+
+        private static void LoadFolderRemarksRecursive(string path, Dictionary<string, string> remarks)
+        {
+            try
+            {
+                var remarkFile = Path.Combine(path, "emoji_remarks.json");
+                if (File.Exists(remarkFile))
+                {
+                    try
+                    {
+                        var json = File.ReadAllText(remarkFile);
+                        var fileRemarks = JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonOptions);
+                        if (fileRemarks != null)
+                        {
+                            foreach (var kvp in fileRemarks)
+                            {
+                                var absPath = Path.Combine(path, kvp.Key);
+                                remarks[absPath] = kvp.Value;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                foreach (var dir in Directory.GetDirectories(path))
+                {
+                    LoadFolderRemarksRecursive(dir, remarks);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// 同步图片重命名导致的备注键名变化。仅处理同文件夹内改名（修扩展名场景）。
+        /// 旧文件无备注则不操作；目标已有备注则保留目标不覆盖。
+        /// </summary>
+        private static void RenameImageRemark(string oldImagePath, string newImagePath)
+        {
+            try
+            {
+                var folderPath = Path.GetDirectoryName(oldImagePath);
+                if (string.IsNullOrEmpty(folderPath) || !Directory.Exists(folderPath))
+                    return;
+
+                if (!string.Equals(folderPath, Path.GetDirectoryName(newImagePath), StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                var remarkFile = Path.Combine(folderPath, "emoji_remarks.json");
+                if (!File.Exists(remarkFile)) return;
+
+                Dictionary<string, string>? existing;
+                try
+                {
+                    var existingJson = File.ReadAllText(remarkFile);
+                    existing = JsonSerializer.Deserialize<Dictionary<string, string>>(existingJson, JsonOptions);
+                }
+                catch { return; }
+
+                if (existing == null || existing.Count == 0) return;
+
+                var remarks = new Dictionary<string, string>(existing, StringComparer.OrdinalIgnoreCase);
+                var oldName = Path.GetFileName(oldImagePath);
+                var newName = Path.GetFileName(newImagePath);
+
+                if (!remarks.TryGetValue(oldName, out var remark)) return;
+
+                remarks.Remove(oldName);
+                if (!remarks.ContainsKey(newName))
+                {
+                    remarks[newName] = remark;
+                }
+
+                if (remarks.Count == 0)
+                {
+                    File.Delete(remarkFile);
+                }
+                else
+                {
+                    var json = JsonSerializer.Serialize(remarks, JsonOptions);
+                    File.WriteAllText(remarkFile, json);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to rename image remark: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 保存或清除单张图片的备注。备注为空时移除条目；当所在文件夹没有任何备注时删除整个 json 文件。
+        /// </summary>
+        private static void SaveImageRemark(string imagePath, string remark)
+        {
+            try
+            {
+                var folderPath = Path.GetDirectoryName(imagePath);
+                if (string.IsNullOrEmpty(folderPath) || !Directory.Exists(folderPath))
+                {
+                    Console.WriteLine($"Folder not found for image: {imagePath}");
+                    return;
+                }
+
+                var fileName = Path.GetFileName(imagePath);
+                var remarkFile = Path.Combine(folderPath, "emoji_remarks.json");
+
+                var fileRemarks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                if (File.Exists(remarkFile))
+                {
+                    try
+                    {
+                        var existingJson = File.ReadAllText(remarkFile);
+                        var existing = JsonSerializer.Deserialize<Dictionary<string, string>>(existingJson, JsonOptions);
+                        if (existing != null)
+                        {
+                            foreach (var kvp in existing)
+                                fileRemarks[kvp.Key] = kvp.Value;
+                        }
+                    }
+                    catch { }
+                }
+
+                if (string.IsNullOrEmpty(remark))
+                {
+                    fileRemarks.Remove(fileName);
+                }
+                else
+                {
+                    fileRemarks[fileName] = remark;
+                }
+
+                if (fileRemarks.Count == 0)
+                {
+                    if (File.Exists(remarkFile))
+                        File.Delete(remarkFile);
+                }
+                else
+                {
+                    var json = JsonSerializer.Serialize(fileRemarks, JsonOptions);
+                    File.WriteAllText(remarkFile, json);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to save image remark: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 递归扫描所有子文件夹的 emoji_remarks.json，移除对应图片文件不存在的条目。
+        /// 若清理后字典为空则删除整个 json 文件。
+        /// </summary>
+        /// <returns>(清理的备注条数, 删除的空备注文件数, 处理失败的文件数)</returns>
+        public static async Task<(int orphansRemoved, int filesDeleted, int errors)> CleanupOrphanedRemarks(string rootPath)
+        {
+            var orphansRemoved = 0;
+            var filesDeleted = 0;
+            var errors = 0;
+
+            if (!Directory.Exists(rootPath))
+                return (0, 0, 0);
+
+            await Task.Run(() =>
+            {
+                Process(rootPath, ref orphansRemoved, ref filesDeleted, ref errors);
+            });
+
+            return (orphansRemoved, filesDeleted, errors);
+
+            static void Process(string directory, ref int removed, ref int deleted, ref int errCount)
+            {
+                try
+                {
+                    var remarkFile = Path.Combine(directory, "emoji_remarks.json");
+                    if (File.Exists(remarkFile))
+                    {
+                        try
+                        {
+                            var json = File.ReadAllText(remarkFile);
+                            var existing = JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonOptions);
+
+                            if (existing == null || existing.Count == 0)
+                            {
+                                File.Delete(remarkFile);
+                                deleted++;
+                            }
+                            else
+                            {
+                                var kept = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                                foreach (var kvp in existing)
+                                {
+                                    var imgPath = Path.Combine(directory, kvp.Key);
+                                    if (File.Exists(imgPath))
+                                    {
+                                        kept[kvp.Key] = kvp.Value;
+                                    }
+                                    else
+                                    {
+                                        removed++;
+                                    }
+                                }
+
+                                if (kept.Count == 0)
+                                {
+                                    File.Delete(remarkFile);
+                                    deleted++;
+                                }
+                                else if (kept.Count != existing.Count)
+                                {
+                                    var newJson = JsonSerializer.Serialize(kept, JsonOptions);
+                                    File.WriteAllText(remarkFile, newJson);
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            errCount++;
+                        }
+                    }
+
+                    foreach (var subdir in Directory.GetDirectories(directory))
+                    {
+                        Process(subdir, ref removed, ref deleted, ref errCount);
+                    }
+                }
+                catch
+                {
+                    errCount++;
+                }
             }
         }
     }

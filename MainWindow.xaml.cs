@@ -1378,7 +1378,7 @@ namespace EmojiManager
         {
             try
             {
-                if (!File.Exists(filePath))
+                if (!Path.Exists(filePath))
                 {
                     _ = ShowToast("文件不存在", ToastType.Error);
                     return;

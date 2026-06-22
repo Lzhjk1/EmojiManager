@@ -963,6 +963,14 @@ namespace EmojiManager
                         await HandleDropFiles(data.Files, data.TargetPath);
                         break;
 
+                    case "prepareFolderContextMenu":
+                        await ShowFolderContextMenu(data.TargetPath, data.X, data.Y, data.RequestId);
+                        break;
+
+                    case "pasteClipboardImage":
+                        await PasteClipboardImageToFolder(data.TargetPath);
+                        break;
+
                     case "openLocation":
                         OpenFileLocation(data.Path);
                         break;
@@ -1022,11 +1030,7 @@ namespace EmojiManager
             if (files == null || files.Count == 0)
                 return;
 
-            var successCount = 0;
-            var skippedCount = 0;
-            var renamedCount = 0;
-            var formatCorrectedCount = 0;
-            var invalidFileCount = 0;
+            var counters = new SaveCounters();
 
             try
             {
@@ -1038,71 +1042,13 @@ namespace EmojiManager
                     // 将Base64内容解码为字节数组
                     var bytes = Convert.FromBase64String(fileData.Content);
 
-                    // 检测文件的实际图像格式
-                    var actualFormat = ImageFormatDetector.DetectImageFormat(bytes);
-                    if (actualFormat == null)
-                    {
-                        // 不是有效的图像文件，跳过
-                        invalidFileCount++;
-                        continue;
-                    }
-
-                    // 获取原始文件名（不含扩展名）
-                    var originalNameWithoutExt = Path.GetFileNameWithoutExtension(fileData.Name);
-                    var originalExt = Path.GetExtension(fileData.Name).TrimStart('.').ToLower();
-
-                    // 确定最终的文件名（使用正确的扩展名）
-                    var finalFileName = $"{originalNameWithoutExt}.{actualFormat}";
-                    var destPath = Path.Combine(targetPath, finalFileName);
-
-                    // 记录是否进行了格式修正
-                    var isFormatCorrected = !string.IsNullOrEmpty(originalExt) &&
-                                          originalExt != actualFormat &&
-                                          originalExt != "null"; // QQNT可能生成.null文件
-
-                    // 检查文件是否已存在（使用正确的扩展名）
-                    if (File.Exists(destPath))
-                    {
-                        // 如果是MD5文件名且文件已存在，跳过
-                        if (IsMd5FileName(originalNameWithoutExt))
-                        {
-                            skippedCount++;
-                            continue;
-                        }
-
-                        // 非MD5文件名，添加数字后缀
-                        var counter = 1;
-                        while (File.Exists(destPath))
-                        {
-                            destPath = Path.Combine(targetPath, $"{originalNameWithoutExt}_{counter}.{actualFormat}");
-                            counter++;
-                        }
-                        renamedCount++;
-                    }
-
-                    // 写入文件
-                    await File.WriteAllBytesAsync(destPath, bytes);
-                    successCount++;
-
-                    if (isFormatCorrected)
-                        formatCorrectedCount++;
+                    // 复用统一的图片保存逻辑，保持拖拽与剪贴板导入行为一致
+                    counters.Apply(await SaveImageToFolder(targetPath, fileData.Name, bytes));
                 }
 
-                // 构建提示信息
-                var messages = new List<string>();
-                if (successCount > 0) messages.Add($"{successCount} 个文件");
-                if (formatCorrectedCount > 0) messages.Add($"{formatCorrectedCount} 个格式修正");
-                if (skippedCount > 0) messages.Add($"{skippedCount} 个重复");
-                if (renamedCount > 0) messages.Add($"{renamedCount} 个重命名");
-                if (invalidFileCount > 0) messages.Add($"{invalidFileCount} 个无效");
+                await ShowToast(counters.BuildToastMessage(), counters.HasSuccess ? ToastType.Success : ToastType.Info);
 
-                var message = messages.Count > 0
-                    ? $"添加完成：{string.Join("，", messages)}"
-                    : "没有添加任何文件";
-
-                await ShowToast(message, successCount > 0 ? ToastType.Success : ToastType.Info);
-
-                if (successCount > 0)
+                if (counters.HasSuccess)
                 {
                     QueueEmojiReload();
                 }
@@ -1111,6 +1057,235 @@ namespace EmojiManager
             {
                 await ShowToast($"添加失败: {ex.Message}", ToastType.Error);
             }
+        }
+
+        private async Task PasteClipboardImageToFolder(string targetPath)
+        {
+            if (string.IsNullOrWhiteSpace(targetPath) || !Directory.Exists(targetPath))
+            {
+                await ShowToast("目标目录不存在", ToastType.Error);
+                return;
+            }
+
+            var counters = new SaveCounters();
+
+            try
+            {
+                var handledClipboardContent = false;
+
+                // 优先处理剪贴板中的文件列表，这样可以保留原始文件名
+                if (Clipboard.ContainsFileDropList())
+                {
+                    var fileList = Clipboard.GetFileDropList();
+                    foreach (var filePath in fileList.Cast<string>())
+                    {
+                        if (!File.Exists(filePath))
+                            continue;
+
+                        // 先按扩展名粗筛，避免把大体积非图片文件整体读入内存后才判为无效
+                        if (!IsLikelyImageFile(filePath))
+                            continue;
+
+                        var fileName = Path.GetFileName(filePath);
+                        var bytes = await File.ReadAllBytesAsync(filePath);
+                        counters.Apply(await SaveImageToFolder(targetPath, fileName, bytes));
+
+                        handledClipboardContent = true;
+                    }
+                }
+
+                // 如果剪贴板里没有文件，再尝试读取直接复制的位图数据
+                if (!handledClipboardContent && Clipboard.ContainsImage())
+                {
+                    var bitmapSource = Clipboard.GetImage();
+                    if (bitmapSource != null)
+                    {
+                        // 位图数据统一编码为PNG，后续仍会经过格式检测与命名规则处理
+                        var pngBytes = EncodeBitmapSourceToPng(bitmapSource);
+                        var clipboardFileName = $"{AutoNamePrefix}_{DateTime.Now:yyyyMMdd_HHmmss_fff}.png";
+                        counters.Apply(await SaveImageToFolder(targetPath, clipboardFileName, pngBytes));
+
+                        handledClipboardContent = true;
+                    }
+                }
+
+                if (!handledClipboardContent)
+                {
+                    await ShowToast("剪贴板中没有可添加的图片", ToastType.Info);
+                    return;
+                }
+
+                await ShowToast(counters.BuildToastMessage(), counters.HasSuccess ? ToastType.Success : ToastType.Info);
+
+                if (counters.HasSuccess)
+                {
+                    QueueEmojiReload();
+                }
+            }
+            catch (Exception ex)
+            {
+                await ShowToast($"粘贴失败: {ex.Message}", ToastType.Error);
+            }
+        }
+
+        private async Task ShowFolderContextMenu(string targetPath, double x, double y, int requestId)
+        {
+            var canPasteImage = false;
+            if (!string.IsNullOrWhiteSpace(targetPath) && Directory.Exists(targetPath))
+            {
+                try
+                {
+                    canPasteImage = HasClipboardImageContent();
+                }
+                catch (Exception ex)
+                {
+                    // 剪贴板被其他程序占用时通知用户，但不阻止菜单弹出
+                    await ShowToast($"无法读取剪贴板: {ex.Message}", ToastType.Error);
+                }
+            }
+
+            await WebView.CoreWebView2.ExecuteScriptAsync(
+                $"handleMessage({{type: 'showFolderContextMenu', x: {x}, y: {y}, canPasteImage: {canPasteImage.ToString().ToLower()}, requestId: {requestId}}})");
+        }
+
+        private async Task<SaveOutcome> SaveImageToFolder(
+            string targetPath,
+            string originalName,
+            byte[] bytes)
+        {
+            // 检测文件的实际图像格式
+            var actualFormat = ImageFormatDetector.DetectImageFormat(bytes);
+            if (actualFormat == null)
+            {
+                // 不是有效的图像文件，跳过
+                return new SaveOutcome(false, false, false, false, true);
+            }
+
+            // 获取原始文件名（不含扩展名）
+            var safeFileName = Path.GetFileName(originalName);
+            var originalNameWithoutExt = Path.GetFileNameWithoutExtension(safeFileName);
+            if (string.IsNullOrWhiteSpace(originalNameWithoutExt))
+            {
+                originalNameWithoutExt = $"{AutoNamePrefix}_{DateTime.Now:yyyyMMdd_HHmmss_fff}";
+            }
+
+            var originalExt = Path.GetExtension(safeFileName).TrimStart('.').ToLower();
+
+            // 确定最终的文件名（使用正确的扩展名）
+            var finalFileName = $"{originalNameWithoutExt}.{actualFormat}";
+            var destPath = Path.Combine(targetPath, finalFileName);
+
+            // 记录是否进行了格式修正
+            var isFormatCorrected = !string.IsNullOrEmpty(originalExt) &&
+                                    originalExt != actualFormat &&
+                                    originalExt != "null"; // QQNT可能生成.null文件
+            var renamed = false;
+
+            // 检查文件是否已存在（使用正确的扩展名）
+            if (File.Exists(destPath))
+            {
+                // 如果是MD5文件名且文件已存在，跳过
+                if (IsMd5FileName(originalNameWithoutExt))
+                {
+                    // 重复跳过的文件没有真正写入，不应计为格式修正
+                    return new SaveOutcome(false, true, false, false, false);
+                }
+
+                // 非MD5文件名，添加数字后缀
+                var counter = 1;
+                while (File.Exists(destPath))
+                {
+                    destPath = Path.Combine(targetPath, $"{originalNameWithoutExt}_{counter}.{actualFormat}");
+                    counter++;
+                }
+
+                renamed = true;
+            }
+
+            // 写入文件
+            await File.WriteAllBytesAsync(destPath, bytes);
+            return new SaveOutcome(true, false, renamed, isFormatCorrected, false);
+        }
+
+        // 无来源文件名时统一使用的前缀（拖拽/剪贴板/位图均一致）
+        private const string AutoNamePrefix = "image";
+
+        // 按扩展名粗筛常见图片格式，避免把大体积非图片文件整体读入内存后才判为无效
+        // .null 一并纳入，因为 QQNT 复制出的图片文件可能带该扩展名
+        private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".ico", ".null"
+        };
+
+        private static bool IsLikelyImageFile(string filePath)
+        {
+            var ext = Path.GetExtension(filePath);
+            return ImageExtensions.Contains(ext);
+        }
+
+        private static bool HasClipboardImageContent()
+        {
+            if (Clipboard.ContainsFileDropList())
+            {
+                var fileList = Clipboard.GetFileDropList();
+                foreach (var filePath in fileList.Cast<string>())
+                {
+                    if (File.Exists(filePath) && IsLikelyImageFile(filePath))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return Clipboard.ContainsImage();
+        }
+
+        // 统一收集图片保存结果并构建提示信息，消除各导入入口的计数与文案样板
+        private sealed class SaveCounters
+        {
+            public int Success;
+            public int Skipped;
+            public int Renamed;
+            public int FormatCorrected;
+            public int Invalid;
+
+            public void Apply(SaveOutcome outcome)
+            {
+                if (outcome.Success) Success++;
+                if (outcome.Skipped) Skipped++;
+                if (outcome.Renamed) Renamed++;
+                if (outcome.FormatCorrected) FormatCorrected++;
+                if (outcome.Invalid) Invalid++;
+            }
+
+            public bool HasSuccess => Success > 0;
+
+            public string BuildToastMessage()
+            {
+                var messages = new List<string>();
+                if (Success > 0) messages.Add($"{Success} 个文件");
+                if (FormatCorrected > 0) messages.Add($"{FormatCorrected} 个格式修正");
+                if (Skipped > 0) messages.Add($"{Skipped} 个重复");
+                if (Renamed > 0) messages.Add($"{Renamed} 个重命名");
+                if (Invalid > 0) messages.Add($"{Invalid} 个无效");
+
+                return messages.Count > 0
+                    ? $"添加完成：{string.Join("，", messages)}"
+                    : "没有添加任何文件";
+            }
+        }
+
+        private record SaveOutcome(bool Success, bool Skipped, bool Renamed, bool FormatCorrected, bool Invalid);
+
+        private static byte[] EncodeBitmapSourceToPng(System.Windows.Media.Imaging.BitmapSource bitmapSource)
+        {
+            // 统一编码为PNG，避免不同剪贴板来源带来的格式兼容差异
+            var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+            encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmapSource));
+
+            using var stream = new MemoryStream();
+            encoder.Save(stream);
+            return stream.ToArray();
         }
 
         private void TogglePin()
@@ -1975,6 +2150,9 @@ namespace EmojiManager
         public string Path { get; set; } = string.Empty;
         public List<FileData> Files { get; set; } = [];
         public string TargetPath { get; set; } = string.Empty;
+        public double X { get; set; }
+        public double Y { get; set; }
+        public int RequestId { get; set; }
     }
 
     public class FileData

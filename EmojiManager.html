@@ -415,6 +415,10 @@
             <span class="context-menu-icon">📁</span>
             <span>打开目录</span>
         </div>
+        <div class="context-menu-item" id="menu-paste-image" style="display: none;">
+            <span class="context-menu-icon">📋</span>
+            <span>粘贴图片</span>
+        </div>
         <div class="context-menu-item" id="menu-reset-scale" style="display: none;">
             <span class="context-menu-icon">🔄</span>
             <span>重置缩放倍率</span>
@@ -446,6 +450,8 @@
         let currentPreviewPath = '';
         let isPinned = false;
         let contextMenuTarget = null;
+        let pendingFolderContextMenu = null;
+        let folderContextMenuRequestId = 0;
         let enableFilenameSearch = false;
         let baseThumbnailSize = 80;
         let enableCtrlScrollResize = true;
@@ -906,6 +912,7 @@
                 // 显示/隐藏重置缩放选项
                 const resetScaleItem = document.getElementById('menu-reset-scale');
                 const openLocationItem = document.getElementById('menu-open-location');
+                const pasteImageItem = document.getElementById('menu-paste-image');
                 const deleteItem = document.getElementById('menu-delete');
                 const setRemarkItem = document.getElementById('menu-set-remark');
                 
@@ -913,19 +920,23 @@
                 const hasCustomScale = (folder.Path === '' || folder.Path === null) ? 
                     folderScales[''] !== undefined : 
                     folderScales[folder.Path] !== undefined;
-                    
-                if (hasCustomScale) {
-                    resetScaleItem.style.display = 'block';
-                } else {
-                    resetScaleItem.style.display = 'none';
-                }
-                
-                // 文件夹标题右键菜单，隐藏删除选项和备注选项
-                openLocationItem.style.display = 'block';
-                deleteItem.style.display = 'none';
-                if (setRemarkItem) setRemarkItem.style.display = 'none';
-                
-                showContextMenu(e.clientX, e.clientY);
+
+                // 文件夹标题右键菜单需要先由宿主判断剪贴板内是否存在可粘贴图片
+                const requestId = ++folderContextMenuRequestId;
+                pendingFolderContextMenu = {
+                    requestId,
+                    x: e.clientX,
+                    y: e.clientY,
+                    hasCustomScale
+                };
+
+                window.chrome.webview.postMessage(JSON.stringify({
+                    type: 'prepareFolderContextMenu',
+                    targetPath: folder.Path,
+                    x: e.clientX,
+                    y: e.clientY,
+                    requestId
+                }));
             });
 
             header.onclick = () => {
@@ -1182,10 +1193,12 @@
             item.oncontextmenu = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                pendingFolderContextMenu = null;
                 contextMenuTarget = imagePath;
                 
                 // 恢复显示所有选项
                 document.getElementById('menu-open-location').style.display = 'block';
+                document.getElementById('menu-paste-image').style.display = 'none';
                 document.getElementById('menu-delete').style.display = 'block';
                 document.getElementById('menu-reset-scale').style.display = 'none';
                 const setRemarkItem = document.getElementById('menu-set-remark');
@@ -1374,6 +1387,7 @@
         function hideContextMenu() {
             document.getElementById('context-menu').style.display = 'none';
             contextMenuTarget = null;
+            pendingFolderContextMenu = null;
         }
 
         // 右键菜单项点击事件
@@ -1383,6 +1397,16 @@
                 window.chrome.webview.postMessage(JSON.stringify({
                     type: 'openLocation',
                     path: targetPath
+                }));
+                hideContextMenu();
+            }
+        };
+
+        document.getElementById('menu-paste-image').onclick = () => {
+            if (contextMenuTarget && contextMenuTarget.type === 'folder-header' && contextMenuTarget.folderPath) {
+                window.chrome.webview.postMessage(JSON.stringify({
+                    type: 'pasteClipboardImage',
+                    targetPath: contextMenuTarget.folderPath
                 }));
                 hideContextMenu();
             }
@@ -1629,6 +1653,34 @@
         function handleMessage(message) {
             if (message.type === 'showToast') {
                 showToast(message.text, message.toastType);
+                return;
+            }
+
+            if (message.type === 'showFolderContextMenu') {
+                if (!pendingFolderContextMenu || pendingFolderContextMenu.requestId !== message.requestId) {
+                    return;
+                }
+
+                if (!contextMenuTarget || contextMenuTarget.type !== 'folder-header') {
+                    pendingFolderContextMenu = null;
+                    return;
+                }
+
+                const resetScaleItem = document.getElementById('menu-reset-scale');
+                const openLocationItem = document.getElementById('menu-open-location');
+                const pasteImageItem = document.getElementById('menu-paste-image');
+                const deleteItem = document.getElementById('menu-delete');
+                const setRemarkItem = document.getElementById('menu-set-remark');
+                const isRealFolder = !!contextMenuTarget.folderPath;
+
+                resetScaleItem.style.display = pendingFolderContextMenu.hasCustomScale ? 'block' : 'none';
+                openLocationItem.style.display = isRealFolder ? 'block' : 'none';
+                pasteImageItem.style.display = isRealFolder && message.canPasteImage ? 'block' : 'none';
+                deleteItem.style.display = 'none';
+                if (setRemarkItem) setRemarkItem.style.display = 'none';
+
+                showContextMenu(message.x, message.y);
+                pendingFolderContextMenu = null;
             }
         }
     </script>

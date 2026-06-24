@@ -107,7 +107,7 @@
         #content {
             flex: 1;
             overflow-y: auto;
-            padding: 10px;
+            padding: 0 10px 10px;
         }
 
         #status-bar {
@@ -144,6 +144,10 @@
             margin-bottom: 5px;
         }
 
+        .folder:first-child {
+            margin-top: 10px;
+        }
+
         .folder-header {
             display: flex;
             align-items: center;
@@ -152,7 +156,9 @@
             border-radius: 4px;
             cursor: pointer;
             transition: background 0.2s;
-            position: relative;
+            position: sticky;
+            top: 0;
+            z-index: 20;
         }
 
             .folder-header:hover {
@@ -331,6 +337,22 @@
             ::-webkit-scrollbar-thumb:hover {
                 background: #666;
             }
+
+        /* 文件夹折叠后标题高亮闪烁，提示收起后所在位置 */
+        .folder-header.highlight-fold {
+            animation: highlight-fold 0.9s ease-out;
+        }
+
+        @keyframes highlight-fold {
+            0% {
+                background: #0078d4;
+                box-shadow: 0 0 0 2px rgba(0, 120, 212, 0.6);
+            }
+            100% {
+                background: #2d2d2d;
+                box-shadow: 0 0 0 2px rgba(0, 120, 212, 0);
+            }
+        }
 
         /* 右键菜单样式 */
         #context-menu {
@@ -837,6 +859,36 @@
             }
         }
 
+        // 折叠文件夹后，若标题已被滚出视口顶部，瞬间滚动使其回到吸顶位置
+        // 标题仍在可见区域内时不滚动，避免不必要的位移
+        function smoothScrollHeaderToTopIfHidden(header) {
+            const container = document.getElementById('content');
+            if (!container) return;
+
+            const headerRect = header.getBoundingClientRect();
+            const containerRect = container.getBoundingClientRect();
+
+            // 标题顶部相对容器视口顶部的偏移；为正表示在视口内或下方，为负表示已被滚出顶部
+            const offsetTop = headerRect.top - containerRect.top;
+
+            // 标题当前可见（顶部未超出容器视口），无需滚动
+            if (offsetTop >= 0) return;
+
+            // 瞬间滚动到吸顶位置
+            container.scrollTop += offsetTop;
+        }
+
+        // 给标题挂上高亮动画类，动画结束后自动移除以便可重复触发
+        function flashHighlight(header) {
+            header.classList.remove('highlight-fold');
+            // 强制重排，确保移除后再次添加能重新触发动画
+            void header.offsetWidth;
+            header.classList.add('highlight-fold');
+            header.addEventListener('animationend', () => {
+                header.classList.remove('highlight-fold');
+            }, { once: true });
+        }
+
         function renderFolders() {
             const content = document.getElementById('content');
             resetImageObserver();
@@ -971,6 +1023,11 @@
                     if (content.dataset.rendered === '1') {
                         clearFolderContent(content);
                     }
+                    // 折叠后若标题已被滚出视口顶部，平滑滚动使其回到吸顶位置，
+                    // 让用户看清收起后文件夹所在位置；若标题仍可见则保持不动
+                    smoothScrollHeaderToTopIfHidden(header);
+                    // 每次收起都高亮闪烁，提示文件夹最终位置
+                    flashHighlight(header);
                 }
             };
 

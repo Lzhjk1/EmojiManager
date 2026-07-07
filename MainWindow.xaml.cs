@@ -528,6 +528,9 @@ namespace EmojiManager
 
                     var emojiData = ScanEmojiDirectory(basePath, cancellationToken);
 
+                    // 按自定义顺序重排根目录下的文件夹（仅根目录，子文件夹保持文件系统顺序）
+                    ApplyFolderOrder(emojiData, LoadFolderOrder(basePath));
+
                     // 构建最近表情文件夹
                     var recentFolder = new EmojiFolder
                     {
@@ -592,6 +595,40 @@ namespace EmojiManager
             }
         }
 
+        /// <summary>
+        /// 按自定义顺序重排文件夹列表。
+        /// 顺序列表中存在的文件夹按其索引排列；不在列表中的（新增文件夹）追加到末尾，保持原顺序。
+        /// 顺序列表为空时不做任何调整。
+        /// </summary>
+        private static void ApplyFolderOrder(List<EmojiFolder> folders, List<string> order)
+        {
+            if (order.Count == 0 || folders.Count <= 1)
+                return;
+
+            // 建立 名称 -> 顺序索引 的映射（忽略大小写）
+            var orderIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < order.Count; i++)
+            {
+                orderIndex[order[i]] = i;
+            }
+
+            // 稳定排序：在 order 中的按索引升序，不在的按 int.MaxValue 保持原相对顺序
+            var decorated = folders
+                .Select((f, idx) => (folder: f, orderPos: orderIndex.TryGetValue(f.Name, out var p) ? p : int.MaxValue, origIdx: idx))
+                .ToList();
+
+            decorated.Sort((a, b) =>
+            {
+                var c = a.orderPos.CompareTo(b.orderPos);
+                return c != 0 ? c : a.origIdx.CompareTo(b.origIdx);
+            });
+
+            for (var i = 0; i < folders.Count; i++)
+            {
+                folders[i] = decorated[i].folder;
+            }
+        }
+
         private List<EmojiFolder> ScanEmojiDirectory(string path, CancellationToken cancellationToken)
         {
             var result = new List<EmojiFolder>();
@@ -625,6 +662,38 @@ namespace EmojiManager
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// 按自定义顺序重排图片路径列表（就地修改）。
+        /// 顺序列表存的是文件名，按其索引匹配；不在列表中的（新增图片）排到最前面，保持原顺序。
+        /// 顺序列表为空时不做任何调整。
+        /// </summary>
+        private static void ApplyImageOrder(List<string> imagePaths, List<string> order)
+        {
+            if (order.Count == 0 || imagePaths.Count <= 1)
+                return;
+
+            var orderIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < order.Count; i++)
+            {
+                orderIndex[order[i]] = i;
+            }
+
+            var decorated = imagePaths
+                .Select((p, idx) => (path: p, orderPos: orderIndex.TryGetValue(Path.GetFileName(p), out var v) ? v : -1, origIdx: idx))
+                .ToList();
+
+            decorated.Sort((a, b) =>
+            {
+                var c = a.orderPos.CompareTo(b.orderPos);
+                return c != 0 ? c : a.origIdx.CompareTo(b.origIdx);
+            });
+
+            for (var i = 0; i < imagePaths.Count; i++)
+            {
+                imagePaths[i] = decorated[i].path;
+            }
         }
 
         private List<string> GetImages(string path, CancellationToken cancellationToken)
@@ -693,6 +762,9 @@ namespace EmojiManager
                     // 按文件名排序（默认行为）
                     validImages.Sort(StringComparer.OrdinalIgnoreCase);
                 }
+
+                // 若该文件夹有自定义图片顺序，覆盖默认排序
+                ApplyImageOrder(validImages, LoadImageOrder(path));
 
                 return validImages;
             }
@@ -898,7 +970,35 @@ namespace EmojiManager
                             _settings.RecentEmojiScale = 1.0;
                             _settings.Save();
                             return;
-                            
+
+                        case "reorderFolders":
+                            if (root.TryGetProperty("folders", out var foldersElement))
+                            {
+                                var folderOrder = foldersElement.EnumerateArray()
+                                    .Select(f => f.GetString() ?? string.Empty)
+                                    .Where(s => !string.IsNullOrEmpty(s))
+                                    .ToList();
+                                SaveFolderOrder(_settings.EmojiBasePath, folderOrder);
+                            }
+                            return;
+
+                        case "reorderImages":
+                            if (root.TryGetProperty("folderPath", out var imgOrderPathElement) &&
+                                root.TryGetProperty("images", out var imagesElement))
+                            {
+                                var folderPath = imgOrderPathElement.GetString();
+                                if (!string.IsNullOrEmpty(folderPath))
+                                {
+                                    // 前端传绝对路径，转文件名后保存
+                                    var imageOrder = imagesElement.EnumerateArray()
+                                        .Select(p => Path.GetFileName(p.GetString() ?? string.Empty))
+                                        .Where(s => !string.IsNullOrEmpty(s))
+                                        .ToList();
+                                    SaveImageOrder(folderPath, imageOrder);
+                                }
+                            }
+                            return;
+
                         case "setRemark":
                             if (root.TryGetProperty("imagePath", out var imgPathElement) &&
                                 root.TryGetProperty("remark", out var remarkElement))
@@ -1871,6 +1971,128 @@ namespace EmojiManager
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to delete folder scale: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 加载指定目录下子文件夹的自定义显示顺序。
+        /// 返回文件夹名有序列表；配置不存在或为空时返回空列表（调用方按文件系统默认顺序）。
+        /// </summary>
+        private static List<string> LoadFolderOrder(string parentPath)
+        {
+            var order = new List<string>();
+
+            if (!Directory.Exists(parentPath))
+                return order;
+
+            try
+            {
+                var orderFile = Path.Combine(parentPath, "emoji_folder_order.json");
+                if (File.Exists(orderFile))
+                {
+                    var json = File.ReadAllText(orderFile);
+                    using var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.TryGetProperty("folders", out var foldersElement))
+                    {
+                        foreach (var name in foldersElement.EnumerateArray())
+                        {
+                            var s = name.GetString();
+                            if (!string.IsNullOrEmpty(s))
+                                order.Add(s);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to load folder order: {ex.Message}");
+            }
+
+            return order;
+        }
+
+        /// <summary>
+        /// 保存指定目录下子文件夹的自定义显示顺序到 emoji_folder_order.json
+        /// </summary>
+        private static void SaveFolderOrder(string parentPath, List<string> folderOrder)
+        {
+            try
+            {
+                if (!Directory.Exists(parentPath))
+                {
+                    Console.WriteLine($"Parent folder not found: {parentPath}");
+                    return;
+                }
+
+                var orderFile = Path.Combine(parentPath, "emoji_folder_order.json");
+                var data = new { folders = folderOrder };
+                var json = JsonSerializer.Serialize(data, JsonOptions);
+                File.WriteAllText(orderFile, json);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to save folder order: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 加载指定文件夹内图片的自定义显示顺序。
+        /// 返回文件名有序列表；配置不存在时返回空列表（调用方按默认顺序）。
+        /// </summary>
+        private static List<string> LoadImageOrder(string folderPath)
+        {
+            var order = new List<string>();
+
+            if (!Directory.Exists(folderPath))
+                return order;
+
+            try
+            {
+                var orderFile = Path.Combine(folderPath, "emoji_image_order.json");
+                if (File.Exists(orderFile))
+                {
+                    var json = File.ReadAllText(orderFile);
+                    using var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.TryGetProperty("images", out var imagesElement))
+                    {
+                        foreach (var name in imagesElement.EnumerateArray())
+                        {
+                            var s = name.GetString();
+                            if (!string.IsNullOrEmpty(s))
+                                order.Add(s);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to load image order: {ex.Message}");
+            }
+
+            return order;
+        }
+
+        /// <summary>
+        /// 保存指定文件夹内图片的自定义显示顺序到 emoji_image_order.json
+        /// </summary>
+        private static void SaveImageOrder(string folderPath, List<string> imageOrder)
+        {
+            try
+            {
+                if (!Directory.Exists(folderPath))
+                {
+                    Console.WriteLine($"Folder not found: {folderPath}");
+                    return;
+                }
+
+                var orderFile = Path.Combine(folderPath, "emoji_image_order.json");
+                var data = new { images = imageOrder };
+                var json = JsonSerializer.Serialize(data, JsonOptions);
+                File.WriteAllText(orderFile, json);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to save image order: {ex.Message}");
             }
         }
 

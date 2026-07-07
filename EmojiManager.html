@@ -170,6 +170,21 @@
                 box-shadow: 0 0 0 2px rgba(0, 120, 212, 0.5);
             }
 
+            /* 拖拽排序：可拖拽的标题 */
+            .folder-header[draggable="true"] {
+                cursor: grab;
+            }
+
+            .folder-header.dragging {
+                opacity: 0.5;
+                cursor: grabbing;
+            }
+
+            /* 拖拽排序放置指示器：蓝色上边框表示插入到此文件夹前面 */
+            .folder-header.drag-over-reorder {
+                border-top: 2px solid #0078d4;
+            }
+
         .folder-arrow {
             width: 16px;
             height: 16px;
@@ -238,6 +253,20 @@
                 width: 100%;
                 height: 100%;
                 object-fit: contain;
+            }
+
+            /* 图片拖拽排序 */
+            .image-item[draggable="true"] {
+                cursor: grab;
+            }
+
+            .image-item.dragging {
+                opacity: 0.4;
+            }
+
+            /* 拖拽排序放置指示器：蓝色左边框表示插入到此图片前面 */
+            .image-item.drag-over-reorder {
+                box-shadow: -3px 0 0 0 #0078d4;
             }
 
         #preview-overlay {
@@ -470,6 +499,7 @@
         let basePath = '';
         let isMouseDown = false;
         let currentPreviewPath = '';
+        let isPreviewing = false; // 长按预览已激活，此时禁止拖拽排序与点击复制
         let isPinned = false;
         let contextMenuTarget = null;
         let pendingFolderContextMenu = null;
@@ -1033,6 +1063,9 @@
 
             setupDropZone(header);
 
+            // 文件夹标题拖拽排序（排除"最近使用"虚拟分组与搜索状态）
+            setupFolderReorder(header, folder);
+
             folderDiv.appendChild(header);
             folderDiv.appendChild(content);
             parent.appendChild(folderDiv);
@@ -1080,8 +1113,107 @@
             content.dataset.rendered = '0';
         }
 
+        // 文件夹标题拖拽排序。通过自定义 mime type 与"拖入外部图片文件"区分，互不干扰。
+        // 搜索状态下禁用（filteredData 是过滤子集，重排无意义）。
+        function setupFolderReorder(header, folder) {
+            // "最近使用"虚拟分组不参与排序
+            if (folder.Path === '' || folder.Path === null) return;
+
+            header.setAttribute('draggable', 'true');
+
+            header.addEventListener('dragstart', (e) => {
+                // 搜索状态下禁止拖拽排序
+                if (currentSearchTerm) {
+                    e.preventDefault();
+                    return;
+                }
+                e.stopPropagation();
+                e.dataTransfer.effectAllowed = 'move';
+                // 用自定义 mime type 携带被拖拽文件夹的路径，与外部文件拖入区分
+                e.dataTransfer.setData('text/folder-reorder', folder.Path);
+                header.classList.add('dragging');
+            });
+
+            header.addEventListener('dragend', () => {
+                header.classList.remove('dragging');
+                document.querySelectorAll('.folder-header.drag-over-reorder')
+                    .forEach(el => el.classList.remove('drag-over-reorder'));
+            });
+
+            header.addEventListener('dragover', (e) => {
+                if (!e.dataTransfer.types.includes('text/folder-reorder')) return;
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = 'move';
+                header.classList.add('drag-over-reorder');
+            });
+
+            header.addEventListener('dragleave', (e) => {
+                if (!e.dataTransfer.types.includes('text/folder-reorder')) return;
+                header.classList.remove('drag-over-reorder');
+            });
+
+            header.addEventListener('drop', (e) => {
+                if (!e.dataTransfer.types.includes('text/folder-reorder')) return;
+                e.preventDefault();
+                e.stopPropagation();
+                header.classList.remove('drag-over-reorder');
+
+                const fromPath = e.dataTransfer.getData('text/folder-reorder');
+                const toPath = folder.Path;
+                if (!fromPath || fromPath === toPath) return;
+
+                // 在 filteredData 中重排：把被拖拽文件夹移到目标文件夹前面
+                const fromIdx = filteredData.findIndex(f => f.Path === fromPath);
+                const toIdx = filteredData.findIndex(f => f.Path === toPath);
+                if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) return;
+
+                const [moved] = filteredData.splice(fromIdx, 1);
+                // 移除后目标索引可能前移一位，重新定位
+                const newToIdx = filteredData.findIndex(f => f.Path === toPath);
+                filteredData.splice(newToIdx, 0, moved);
+
+                // 同步更新 emojiData，保持下次渲染一致
+                syncEmojiDataOrder();
+
+                // 重新渲染并回传新顺序给 C# 持久化
+                renderFolders();
+                sendFolderOrder();
+            });
+        }
+
+        // 将 filteredData 的顺序同步回 emojiData（排除"最近使用"虚拟分组）
+        function syncEmojiDataOrder() {
+            const ordered = filteredData.filter(f => !(f.Name === '最近使用' && (f.Path === '' || f.Path === null)));
+            const recentIdx = emojiData.findIndex(f => f.Name === '最近使用' && (f.Path === '' || f.Path === null));
+            if (recentIdx !== -1) {
+                // 保留最近使用在原位置，其后用 ordered 替换
+                emojiData.splice(recentIdx + 1);
+                emojiData.push(...ordered);
+            } else {
+                emojiData.length = 0;
+                emojiData.push(...ordered);
+            }
+        }
+
+        // 将当前根目录文件夹顺序（仅文件夹名）回传给 C# 持久化
+        function sendFolderOrder() {
+            const names = filteredData
+                .filter(f => !(f.Name === '最近使用' && (f.Path === '' || f.Path === null)))
+                .map(f => f.Name);
+            window.chrome.webview.postMessage(JSON.stringify({
+                type: 'reorderFolders',
+                folders: names
+            }));
+        }
+
         function setupDropZone(element) {
             element.addEventListener('dragover', (e) => {
+                // 文件夹排序拖拽由 setupFolderReorder 处理，此处让出
+                // 排序拖拽由各自的 reorder 处理器处理，此处让出
+                if (e.dataTransfer.types.includes('text/folder-reorder') ||
+                    e.dataTransfer.types.includes('text/image-reorder')) return;
+
                 e.preventDefault();
                 e.stopPropagation();
 
@@ -1100,6 +1232,10 @@
             });
 
             element.addEventListener('dragleave', (e) => {
+                // 排序拖拽由各自的 reorder 处理器处理，此处让出
+                if (e.dataTransfer.types.includes('text/folder-reorder') ||
+                    e.dataTransfer.types.includes('text/image-reorder')) return;
+
                 e.preventDefault();
                 e.stopPropagation();
                 element.classList.remove('drag-over');
@@ -1107,6 +1243,10 @@
             });
 
             element.addEventListener('drop', async (e) => {
+                // 排序拖拽由各自的 reorder 处理器处理，此处让出
+                if (e.dataTransfer.types.includes('text/folder-reorder') ||
+                    e.dataTransfer.types.includes('text/image-reorder')) return;
+
                 e.preventDefault();
                 e.stopPropagation();
                 element.classList.remove('drag-over');
@@ -1203,6 +1343,8 @@
             img.loading = 'lazy';
             img.decoding = 'async';
             img.setAttribute('fetchpriority', 'low');
+            // 禁用 img 自身的拖拽，让父级 .image-item 接管拖拽排序
+            img.setAttribute('draggable', 'false');
             img.onerror = function () {
                 console.error('Failed to load image:', imagePath);
                 console.error('Attempted URL:', this.src);
@@ -1237,6 +1379,11 @@
             // 点击复制
             item.onclick = (e) => {
                 e.stopPropagation();
+                // 预览刚结束时不触发复制
+                if (isPreviewing) {
+                    isPreviewing = false;
+                    return;
+                }
                 if (!isMouseDown) {
                     window.chrome.webview.postMessage(JSON.stringify({
                         type: 'copyImage',
@@ -1266,10 +1413,12 @@
 
             // 鼠标按下开始预览
             item.onmousedown = (e) => {
-                e.preventDefault();
+                // 不调用 preventDefault，否则会阻止原生拖拽序列（dragstart）启动
                 isMouseDown = true;
+                isPreviewing = false; // 重置上一次可能残留的预览状态
                 longPressTimer = setTimeout(() => {
                     if (isMouseDown) {
+                        isPreviewing = true;
                         showPreview(imagePath);
                     }
                 }, 300);
@@ -1289,7 +1438,121 @@
                 hideFilename();
             };
 
+            // 图片拖拽排序
+            item.setAttribute('draggable', 'true');
+
+            item.addEventListener('dragstart', (e) => {
+                // 长按预览已激活时，禁止拖拽排序，保持"移动鼠标切换预览图"的原有行为
+                if (isPreviewing) {
+                    e.preventDefault();
+                    return;
+                }
+                // 拖拽开始时清除长按预览，避免预览图干扰拖拽
+                clearTimeout(longPressTimer);
+                isMouseDown = false;
+                hidePreview();
+                e.stopPropagation();
+                e.dataTransfer.effectAllowed = 'move';
+                // 用自定义 mime type 携带被拖图片路径，与外部文件拖入区分
+                e.dataTransfer.setData('text/image-reorder', imagePath);
+                item.classList.add('dragging');
+            });
+
+            item.addEventListener('dragend', () => {
+                item.classList.remove('dragging');
+                document.querySelectorAll('.image-item.drag-over-reorder')
+                    .forEach(el => el.classList.remove('drag-over-reorder'));
+            });
+
+            item.addEventListener('dragover', (e) => {
+                if (!e.dataTransfer.types.includes('text/image-reorder')) return;
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = 'move';
+                item.classList.add('drag-over-reorder');
+            });
+
+            item.addEventListener('dragleave', (e) => {
+                if (!e.dataTransfer.types.includes('text/image-reorder')) return;
+                item.classList.remove('drag-over-reorder');
+            });
+
+            item.addEventListener('drop', (e) => {
+                if (!e.dataTransfer.types.includes('text/image-reorder')) return;
+                e.preventDefault();
+                e.stopPropagation();
+                item.classList.remove('drag-over-reorder');
+
+                const fromPath = e.dataTransfer.getData('text/image-reorder');
+                const toPath = imagePath;
+                if (!fromPath || fromPath === toPath) return;
+
+                // 从父级 grid 获取所属文件夹路径
+                const grid = item.closest('.image-grid');
+                if (!grid) return;
+                const folderPath = grid.dataset.folderPath;
+
+                // "最近使用"虚拟分组顺序由使用时间决定，不支持手动排序
+                if (!folderPath) return;
+
+                // 在 emojiData 中找到对应文件夹并重排 Images
+                const folder = findFolderByPath(emojiData, folderPath);
+                if (!folder) return;
+
+                const fromIdx = folder.Images.indexOf(fromPath);
+                const toIdx = folder.Images.indexOf(toPath);
+                if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) return;
+
+                const [moved] = folder.Images.splice(fromIdx, 1);
+                const newToIdx = folder.Images.indexOf(toPath);
+                folder.Images.splice(newToIdx, 0, moved);
+
+                // 同步 filteredData 中对应文件夹的 Images
+                const filteredFolder = findFolderByPath(filteredData, folderPath);
+                if (filteredFolder && filteredFolder !== folder) {
+                    filteredFolder.Images = folder.Images.slice();
+                }
+
+                // 重新渲染该网格并回传新顺序
+                rebuildImageGrid(grid, folder);
+                sendImageOrder(folderPath, folder.Images);
+            });
+
             return item;
+        }
+
+        // 在文件夹树中按 Path 查找文件夹（递归）
+        function findFolderByPath(folders, folderPath) {
+            for (const f of folders) {
+                if (f.Path === folderPath) return f;
+                if (f.Children && f.Children.length > 0) {
+                    const found = findFolderByPath(f.Children, folderPath);
+                    if (found) return found;
+                }
+            }
+            return null;
+        }
+
+        // 用 folder.Images 重建指定 grid 的内容（保持缩放设置）
+        function rebuildImageGrid(grid, folder) {
+            // 保留当前缩放尺寸
+            const currentSize = grid.style.getPropertyValue('--thumbnail-size');
+            grid.innerHTML = '';
+            folder.Images.forEach(imagePath => {
+                grid.appendChild(createImageItem(imagePath));
+            });
+            if (currentSize) {
+                grid.style.setProperty('--thumbnail-size', currentSize);
+            }
+        }
+
+        // 将图片顺序（绝对路径数组）回传给 C# 持久化
+        function sendImageOrder(folderPath, images) {
+            window.chrome.webview.postMessage(JSON.stringify({
+                type: 'reorderImages',
+                folderPath: folderPath,
+                images: images
+            }));
         }
 
         function showPreview(imagePath) {

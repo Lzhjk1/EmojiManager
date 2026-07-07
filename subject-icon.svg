@@ -1,0 +1,36 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="folderFill" x1="76" y1="210" x2="436" y2="429" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2E3546"/>
+      <stop offset="1" stop-color="#1E2432"/>
+    </linearGradient>
+    <linearGradient id="topCardFill" x1="116" y1="110" x2="327" y2="242" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F0F0F1"/>
+      <stop offset="1" stop-color="#D9D9DC"/>
+    </linearGradient>
+  </defs>
+
+  <g>
+    <rect x="314" y="117" width="46" height="132" rx="18" fill="#9FC8F8" stroke="#F7F7F8" stroke-width="7"/>
+    <rect x="350" y="130" width="37" height="118" rx="16" fill="#C9C2FF" stroke="#F7F7F8" stroke-width="7"/>
+
+    <g transform="rotate(-10 225 176)">
+      <rect x="117" y="107" width="196" height="148" rx="24" fill="url(#topCardFill)" stroke="#F7F7F8" stroke-width="8"/>
+      <circle cx="210" cy="181" r="41" stroke="#434850" stroke-width="6"/>
+      <ellipse cx="190" cy="170" rx="7.5" ry="11" fill="#434850"/>
+      <ellipse cx="224" cy="170" rx="7.5" ry="11" fill="#434850"/>
+      <path d="M194 199C200 208 210 212 221 212C232 212 241 206 246 196" stroke="#434850" stroke-width="6" stroke-linecap="round"/>
+    </g>
+
+    <path d="M124 210H194C206 210 217 216 224 226L236 241C243 251 255 257 268 257H395C418 257 436 275 436 298V389C436 412 418 430 395 430H117C94 430 76 412 76 389V251C76 228 94 210 117 210H124Z" fill="url(#folderFill)"/>
+
+    <path d="M327 257H381C394 257 404 267 404 280V308V354L382 338L360 354V280C360 267 370 257 383 257H327Z" fill="#2795FF"/>
+
+    <path d="M124 210H194C206 210 217 216 224 226L236 241C243 251 255 257 268 257H395C418 257 436 275 436 298V389C436 412 418 430 395 430H117C94 430 76 412 76 389V251C76 228 94 210 117 210H124Z" stroke="#FAFAFA" stroke-width="10" stroke-linejoin="round"/>
+
+    <circle cx="255" cy="337" r="49" stroke="#FAFAFA" stroke-width="8"/>
+    <ellipse cx="233" cy="329" rx="7.5" ry="11.5" fill="#FAFAFA"/>
+    <ellipse cx="277" cy="329" rx="7.5" ry="11.5" fill="#FAFAFA"/>
+    <path d="M232 361C238 370 246 374 256 374C266 374 275 370 282 360" stroke="#FAFAFA" stroke-width="8" stroke-linecap="round"/>
+  </g>
+</svg>

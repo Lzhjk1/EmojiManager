@@ -499,6 +499,33 @@
                     </Grid>
                 </GroupBox>
 
+                <!-- 粘贴图片编码 -->
+                <GroupBox Header="粘贴图片编码" Style="{StaticResource GroupBoxStyle}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="120"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <Label Grid.Row="0" Grid.Column="0" Content="JPG 质量:" Style="{StaticResource LabelStyle}"/>
+                        <TextBox Grid.Row="0" Grid.Column="1" x:Name="txtJpegQuality" 
+                               Style="{StaticResource TextBoxStyle}" 
+                               Text="100" Margin="5,0"/>
+                        <TextBlock Grid.Row="0" Grid.Column="2" Text="(1-100)" 
+                                 Foreground="#e0e0e0" VerticalAlignment="Center" Margin="5,0"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" 
+                                 Text="从剪贴板粘贴位图时，无透明通道的图片会编码为 JPG。数值越大质量越好但体积越大。"
+                                 Foreground="#999999" FontSize="11" Margin="5,5,0,0"
+                                 TextWrapping="Wrap"/>
+                    </Grid>
+                </GroupBox>
+
                 <!-- 图片格式修正 -->
                 <GroupBox Header="图片格式修正" Style="{StaticResource GroupBoxStyle}">
                     <Grid>

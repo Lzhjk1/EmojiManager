@@ -103,6 +103,11 @@ namespace EmojiManager
         public bool EnableLegacyClipboardCompatibility { get; set; }
 
         /// <summary>
+        /// 从剪贴板粘贴位图时 JPG 编码的质量系数（1-100）
+        /// </summary>
+        public int JpegQuality { get; set; } = 100;
+
+        /// <summary>
         /// 最近使用表情分组的缩放比例
         /// </summary>
         public double RecentEmojiScale { get; set; } = 1.0;

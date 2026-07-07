@@ -1200,10 +1200,10 @@ namespace EmojiManager
                     var bitmapSource = Clipboard.GetImage();
                     if (bitmapSource != null)
                     {
-                        // 位图数据统一编码为PNG，后续仍会经过格式检测与命名规则处理
-                        var pngBytes = EncodeBitmapSourceToPng(bitmapSource);
-                        var clipboardFileName = $"{AutoNamePrefix}_{DateTime.Now:yyyyMMdd_HHmmss_fff}.png";
-                        counters.Apply(await SaveImageToFolder(targetPath, clipboardFileName, pngBytes));
+                        // 位图根据是否含透明像素选择 PNG/JPG 编码，避免照片被无谓放大
+                        var (imageBytes, extension) = EncodeBitmapSource(bitmapSource, _settings.JpegQuality);
+                        var clipboardFileName = $"{AutoNamePrefix}_{DateTime.Now:yyyyMMdd_HHmmss_fff}.{extension}";
+                        counters.Apply(await SaveImageToFolder(targetPath, clipboardFileName, imageBytes));
 
                         handledClipboardContent = true;
                     }
@@ -1377,15 +1377,75 @@ namespace EmojiManager
 
         private record SaveOutcome(bool Success, bool Skipped, bool Renamed, bool FormatCorrected, bool Invalid);
 
-        private static byte[] EncodeBitmapSourceToPng(System.Windows.Media.Imaging.BitmapSource bitmapSource)
+        private static (byte[] bytes, string extension) EncodeBitmapSource(System.Windows.Media.Imaging.BitmapSource bitmapSource, int jpegQuality)
         {
-            // 统一编码为PNG，避免不同剪贴板来源带来的格式兼容差异
-            var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
-            encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmapSource));
+            // 根据图像特征选择编码格式：
+            // - 存在透明像素的图像用 PNG（保留透明度）
+            // - 其他图像用 JPG（大幅减小体积，质量系数由设置决定）
+            bool usePng = FormatHasAlpha(bitmapSource.Format) && HasTransparentPixels(bitmapSource);
 
-            using var stream = new MemoryStream();
-            encoder.Save(stream);
-            return stream.ToArray();
+            if (usePng)
+            {
+                var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmapSource));
+                using var stream = new MemoryStream();
+                encoder.Save(stream);
+                return (stream.ToArray(), "png");
+            }
+            else
+            {
+                // 限制在有效范围内，避免设置值越界
+                var clampedQuality = Math.Clamp(jpegQuality, 1, 100);
+                var encoder = new System.Windows.Media.Imaging.JpegBitmapEncoder { QualityLevel = clampedQuality };
+                encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmapSource));
+                using var stream = new MemoryStream();
+                encoder.Save(stream);
+                return (stream.ToArray(), "jpg");
+            }
+        }
+
+        // 判断像素格式是否声明了 alpha 通道；无 alpha 通道的格式无需扫描像素
+        private static bool FormatHasAlpha(System.Windows.Media.PixelFormat format)
+        {
+            return format == System.Windows.Media.PixelFormats.Bgra32 ||
+                   format == System.Windows.Media.PixelFormats.Pbgra32 ||
+                   format == System.Windows.Media.PixelFormats.Rgba64 ||
+                   format == System.Windows.Media.PixelFormats.Prgba64 ||
+                   format == System.Windows.Media.PixelFormats.Rgba128Float ||
+                   format == System.Windows.Media.PixelFormats.Prgba128Float;
+        }
+
+        // 扫描像素判断是否存在半透明像素；仅在格式声明含 alpha 通道时调用
+        private static bool HasTransparentPixels(System.Windows.Media.Imaging.BitmapSource bitmapSource)
+        {
+            // 统一转成 Pbgra32 以便按字节读取 alpha 通道
+            System.Windows.Media.Imaging.BitmapSource source = bitmapSource;
+            if (bitmapSource.Format != System.Windows.Media.PixelFormats.Pbgra32)
+            {
+                var converted = new System.Windows.Media.Imaging.FormatConvertedBitmap();
+                converted.BeginInit();
+                converted.Source = bitmapSource;
+                converted.DestinationFormat = System.Windows.Media.PixelFormats.Pbgra32;
+                converted.EndInit();
+                converted.Freeze();
+                source = converted;
+            }
+
+            int width = source.PixelWidth;
+            int height = source.PixelHeight;
+            int stride = width * 4;
+            byte[] pixels = new byte[stride * height];
+            source.CopyPixels(pixels, stride, 0);
+
+            for (int i = 3; i < pixels.Length; i += 4)
+            {
+                if (pixels[i] < 255)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private void TogglePin()

@@ -59,6 +59,7 @@ namespace EmojiManager
             txtBaseThumbnailSize.Text = _settings.BaseThumbnailSize.ToString();
             chkEnableCtrlScrollResize.IsChecked = _settings.EnableCtrlScrollResize;
             chkEnableLegacyClipboard.IsChecked = _settings.EnableLegacyClipboardCompatibility;
+            txtJpegQuality.Text = _settings.JpegQuality.ToString();
             
             UpdateHotkeyStatus("当前快捷键: " + _settings.HotkeyDisplayName, false);
         }
@@ -353,6 +354,14 @@ namespace EmojiManager
                 return;
             }
 
+            // 验证JPG质量系数
+            if (!int.TryParse(txtJpegQuality.Text, out int jpegQuality) || jpegQuality < 1 || jpegQuality > 100)
+            {
+                MessageBox.Show("JPG 质量必须是1-100之间的整数", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                txtJpegQuality.Focus();
+                return;
+            }
+
             // 保存设置
             _settings.EmojiBasePath = txtEmojiPath.Text;
             _settings.RecentEmojisLimit = recentLimit;
@@ -361,6 +370,7 @@ namespace EmojiManager
             _settings.BaseThumbnailSize = thumbnailSize;
             _settings.EnableCtrlScrollResize = chkEnableCtrlScrollResize.IsChecked == true;
             _settings.EnableLegacyClipboardCompatibility = chkEnableLegacyClipboard.IsChecked == true;
+            _settings.JpegQuality = jpegQuality;
 
             // 如果限制数量减少了，需要裁剪现有的最近表情列表
             while (_settings.RecentEmojis.Count > _settings.RecentEmojisLimit)

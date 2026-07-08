@@ -1396,12 +1396,41 @@ namespace EmojiManager
             {
                 // 限制在有效范围内，避免设置值越界
                 var clampedQuality = Math.Clamp(jpegQuality, 1, 100);
-                var encoder = new System.Windows.Media.Imaging.JpegBitmapEncoder { QualityLevel = clampedQuality };
-                encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmapSource));
+                // 使用 ImageSharp 编码以支持 YUV444 色度子采样（WPF 的 JpegBitmapEncoder 仅支持 4:2:0）
+                using var image = BitmapSourceToImageSharpRgb24(bitmapSource);
                 using var stream = new MemoryStream();
-                encoder.Save(stream);
+                image.Save(stream, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder
+                {
+                    Quality = clampedQuality,
+                    ColorType = SixLabors.ImageSharp.Formats.Jpeg.JpegEncodingColor.YCbCrRatio444
+                });
                 return (stream.ToArray(), "jpg");
             }
+        }
+
+        // 将 BitmapSource 转换为 ImageSharp 的 Rgb24 图像；JPG 不支持 alpha，故统一丢弃透明通道
+        private static SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgb24> BitmapSourceToImageSharpRgb24(System.Windows.Media.Imaging.BitmapSource bitmapSource)
+        {
+            // 统一转成 Rgb24，使其与 ImageSharp 的 Rgb24 内存布局一致（R, G, B）
+            System.Windows.Media.Imaging.BitmapSource source = bitmapSource;
+            if (bitmapSource.Format != System.Windows.Media.PixelFormats.Rgb24)
+            {
+                var converted = new System.Windows.Media.Imaging.FormatConvertedBitmap();
+                converted.BeginInit();
+                converted.Source = bitmapSource;
+                converted.DestinationFormat = System.Windows.Media.PixelFormats.Rgb24;
+                converted.EndInit();
+                converted.Freeze();
+                source = converted;
+            }
+
+            int width = source.PixelWidth;
+            int height = source.PixelHeight;
+            int stride = width * 3;
+            byte[] pixels = new byte[stride * height];
+            source.CopyPixels(pixels, stride, 0);
+
+            return SixLabors.ImageSharp.Image.LoadPixelData<SixLabors.ImageSharp.PixelFormats.Rgb24>(pixels, width, height);
         }
 
         // 判断像素格式是否声明了 alpha 通道；无 alpha 通道的格式无需扫描像素

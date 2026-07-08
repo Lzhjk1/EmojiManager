@@ -1261,22 +1261,15 @@
                     return;
                 }
 
-                const files = [];
+                // 先同步收集文件引用，避免 await 后 dataTransfer 进入 protected 模式导致后续文件不可访问
+                const imageFiles = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
 
-                // 处理拖放的文件
-                for (let i = 0; i < e.dataTransfer.files.length; i++) {
-                    const file = e.dataTransfer.files[i];
-                    if (file.type.startsWith('image/')) {
-                        // 读取文件内容
-                        const content = await readFileAsBase64(file);
-                        files.push({
-                            name: file.name,
-                            content: content
-                        });
-                    }
-                }
+                if (imageFiles.length > 0) {
+                    const files = await Promise.all(imageFiles.map(async file => ({
+                        name: file.name,
+                        content: await readFileAsBase64(file)
+                    })));
 
-                if (files.length > 0) {
                     window.chrome.webview.postMessage(JSON.stringify({
                         type: 'dropFiles',
                         files: files,
